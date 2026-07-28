@@ -48,15 +48,6 @@ type Catalog = {
   stats: { papers: number; abstracts: number; pdfs: number; analyzed: number; semanticSummaries: number; abstractGroundedSummaries: number; titleOnlySummaries: number; sessionPapers: number; sessions: number; trackPapers: number; tracks: number };
   papers: Paper[];
 };
-type DataUpdateStatus = {
-  state: "idle" | "running" | "success" | "error";
-  stage: string;
-  message: string;
-  years: number[];
-  startedAt: string | null;
-  finishedAt: string | null;
-  stats: Catalog["stats"] | null;
-};
 type View = "library" | "topics" | "teams" | "compare" | "seminar" | "data";
 
 const VIEW_LABELS: Record<View, string> = {
@@ -160,9 +151,6 @@ export function CatalogApp() {
 
   const [mobileNav, setMobileNav] = useState(false);
   const [compareIds, setCompareIds] = useState<string[]>([]);
-  const [updateStatus, setUpdateStatus] = useState<DataUpdateStatus | null>(null);
-  const [updateApiAvailable, setUpdateApiAvailable] = useState<boolean | null>(null);
-  const [updateNoticeHidden, setUpdateNoticeHidden] = useState(false);
 
   useEffect(() => {
     fetch("/catalog.json")
@@ -186,57 +174,6 @@ export function CatalogApp() {
       .catch((error: Error) => setLoadError(error.message));
 
   }, []);
-
-  useEffect(() => {
-    fetch("/api/update", { cache: "no-store" })
-      .then((response) => {
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return response.json();
-      })
-      .then((status: DataUpdateStatus) => {
-        setUpdateStatus(status);
-        setUpdateApiAvailable(true);
-      })
-      .catch(() => setUpdateApiAvailable(false));
-  }, []);
-
-  useEffect(() => {
-    if (updateStatus?.state !== "running") return;
-    let active = true;
-    const poll = async () => {
-      try {
-        const response = await fetch("/api/update", { cache: "no-store" });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const status: DataUpdateStatus = await response.json();
-        if (!active) return;
-        if (status.state === "success") {
-          const catalogResponse = await fetch(`/catalog.json?updated=${Date.now()}`, { cache: "no-store" });
-          if (!catalogResponse.ok) throw new Error(`HTTP ${catalogResponse.status}`);
-          const data: Catalog = await catalogResponse.json();
-          if (!active) return;
-          setCatalog(data);
-        }
-        setUpdateStatus(status);
-      } catch (error) {
-        if (!active) return;
-        setUpdateStatus((current) => ({
-          state: "error",
-          stage: "connection",
-          message: `无法读取更新状态：${error instanceof Error ? error.message : "请稍后重试"}`,
-          years: current?.years ?? [],
-          startedAt: current?.startedAt ?? null,
-          finishedAt: new Date().toISOString(),
-          stats: current?.stats ?? null,
-        }));
-      }
-    };
-    const timer = window.setInterval(poll, 1500);
-    void poll();
-    return () => {
-      active = false;
-      window.clearInterval(timer);
-    };
-  }, [updateStatus?.state]);
 
   useEffect(() => {
     try {
@@ -342,33 +279,6 @@ export function CatalogApp() {
     downloadPaperWorkbook(shortlistPapers, "研读列表", shortlistGroups);
   }
 
-  async function startDataUpdate() {
-    setUpdateNoticeHidden(false);
-    try {
-      const response = await fetch("/api/update", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scope: "smart" }),
-      });
-      const status = await response.json();
-      if (!response.ok && response.status !== 409) {
-        throw new Error(status.error || `HTTP ${response.status}`);
-      }
-      setUpdateStatus(status);
-      setUpdateApiAvailable(true);
-    } catch (error) {
-      setUpdateStatus({
-        state: "error",
-        stage: "connection",
-        message: `无法启动更新：${error instanceof Error ? error.message : "请确认本地服务正在运行"}`,
-        years: updateStatus?.years ?? [],
-        startedAt: null,
-        finishedAt: new Date().toISOString(),
-        stats: catalog?.stats ?? null,
-      });
-    }
-  }
-
   if (!catalog && !loadError) {
     return (
       <main className="loading-screen" role="status">
@@ -384,8 +294,8 @@ export function CatalogApp() {
       <main className="loading-screen error-screen">
         <div className="brand-mark">!</div>
         <h1>论文数据尚未生成</h1>
-        <p>请先运行本地数据导出，再刷新页面。</p>
-        <code>python -m pipeline export --format web --output public/catalog.json</code>
+        <p>静态数据文件加载失败，请确认 public/catalog.json 已随站点发布。</p>
+        <code>public/catalog.json</code>
       </main>
     );
   }
@@ -415,7 +325,7 @@ export function CatalogApp() {
         </nav>
         <div className="coverage-card">
           <span className="status-dot" />
-          <div><strong>本地论文库</strong><small>{coverageText} · {fmt(catalog.stats.papers)} 篇</small></div>
+          <div><strong>静态论文库</strong><small>{coverageText} · {fmt(catalog.stats.papers)} 篇</small></div>
         </div>
         <p className="side-foot">Taxonomy {catalog.taxonomyVersion}</p>
       </aside>
@@ -436,34 +346,9 @@ export function CatalogApp() {
             <kbd>/</kbd>
           </div>
           <div className="top-actions">
-            <button
-              className={`update-button ${updateStatus?.state === "running" ? "running" : ""}`}
-              onClick={startDataUpdate}
-              disabled={updateApiAvailable !== true || updateStatus?.state === "running"}
-              title={updateApiAvailable === false ? "请使用本地服务启动网站后更新" : "自动回补上一年并收集当年最新论文"}
-            >
-              <span aria-hidden="true">↻</span>
-              {updateStatus?.state === "running" ? "正在更新" : "更新数据"}
-            </button>
             <button className="shortlist-button" onClick={() => setView("seminar")}>研读列表 <b>{shortlist.length}</b></button>
           </div>
         </header>
-
-        {updateStatus && updateStatus.state !== "idle" && !updateNoticeHidden && (
-          <div className={`update-status ${updateStatus.state}`} role={updateStatus.state === "error" ? "alert" : "status"} aria-live="polite">
-            <span className="update-indicator" aria-hidden="true" />
-            <div>
-              <strong>
-                {updateStatus.state === "running" ? "正在更新数据" : updateStatus.state === "success" ? "更新完成" : "更新未完成"}
-                {updateStatus.years.length > 0 && ` · ${Math.min(...updateStatus.years)}—${Math.max(...updateStatus.years)}`}
-              </strong>
-              <span>{updateStatus.message}</span>
-            </div>
-            {updateStatus.state !== "running" && (
-              <button className="update-dismiss" onClick={() => setUpdateNoticeHidden(true)}>关闭</button>
-            )}
-          </div>
-        )}
 
         <main className="content">
           {view === "library" && (
@@ -1086,7 +971,7 @@ function DataView({ catalog }: { catalog: Catalog }) {
         <div><strong>受控分类器</strong><span>Topic、对象、协议、技术和威胁标签</span><em className="review">待人工复核</em></div>
         <div><strong>飞书适配器</strong><span>生成智能表格所需记录载荷</span><em>接口已预留</em></div>
       </div>
-      <div className="data-foot"><div><span>最近生成</span><strong>{new Date(catalog.generatedAt).toLocaleString("zh-CN")}</strong></div><div><span>分类体系</span><strong>{catalog.taxonomyVersion}</strong></div><div><span>运行模式</span><strong>Local-first · SQLite</strong></div></div>
+      <div className="data-foot"><div><span>最近生成</span><strong>{new Date(catalog.generatedAt).toLocaleString("zh-CN")}</strong></div><div><span>分类体系</span><strong>{catalog.taxonomyVersion}</strong></div><div><span>运行模式</span><strong>静态快照 · SQLite 导出</strong></div></div>
     </section>
   );
 }

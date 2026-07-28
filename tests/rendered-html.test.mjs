@@ -5,17 +5,11 @@ import test from "node:test";
 
 
 async function render() {
-  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
-  const { default: worker } = await import(workerUrl.href);
-  return worker.fetch(
-    new Request("http://localhost/", { headers: { accept: "text/html" } }),
-    { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
-    { waitUntil() {}, passThroughOnException() {} },
-  );
+  const html = await readFile(new URL("../out/index.html", import.meta.url), "utf8");
+  return new Response(html, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } });
 }
 
-test("server-renders the SecAtlas application shell", async () => {
+test("static export renders the SecAtlas application shell", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
@@ -70,17 +64,21 @@ test("starter preview files are removed", async () => {
 
 
 
-test("local deployment exposes the safe web update path", async () => {
+test("static-publish is a self-contained Vercel static site", async () => {
   const catalogApp = await readFile(new URL("../app/catalog-app.tsx", import.meta.url), "utf8");
-  const server = await readFile(new URL("../pipeline/server.py", import.meta.url), "utf8");
   const packageJson = await readFile(new URL("../package.json", import.meta.url), "utf8");
-  const staticHtml = await readFile(new URL("../dist/client/index.html", import.meta.url), "utf8");
-  assert.match(catalogApp, /更新数据/);
-  assert.match(catalogApp, /\/api\/update/);
-  assert.match(catalogApp, /update-status/);
-  assert.match(server, /127\.0\.0\.1/);
-  assert.match(server, /scope.*smart/);
-  assert.doesNotMatch(server, /shell=True/);
-  assert.match(packageJson, /scripts\/export-static\.mjs/);
+  const vercelConfig = JSON.parse(await readFile(new URL("../vercel.json", import.meta.url), "utf8"));
+  const staticHtml = await readFile(new URL("../out/index.html", import.meta.url), "utf8");
+  const sourceCatalog = await readFile(new URL("../public/catalog.json", import.meta.url), "utf8");
+  const staticCatalog = await readFile(new URL("../out/catalog.json", import.meta.url), "utf8");
+
+  assert.doesNotMatch(catalogApp, /更新数据|\/api\/update|update-status/);
+  assert.match(catalogApp, /静态论文库/);
+  assert.match(packageJson, /"build": "next build"/);
+  assert.match(packageJson, /http\.server 3000 --directory out/);
+  assert.equal(vercelConfig.framework, null);
+  assert.equal(vercelConfig.outputDirectory, "out");
+  assert.equal(vercelConfig.buildCommand, "pnpm build");
+  assert.equal(staticCatalog, sourceCatalog);
   assert.match(staticHtml, /<title>SecAtlas/);
 });

@@ -167,51 +167,6 @@ kbd { padding: 2px 7px; border: 1px solid var(--line); border-radius: 5px; backg
   color: #fff;
   font-size: 12px;
 }
-.update-button {
-  min-height: 42px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  padding: 8px 13px;
-  border: 1px solid var(--accent);
-  border-radius: 8px;
-  background: var(--accent);
-  color: #fff;
-  font-size: 14px;
-  font-weight: 650;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.update-button:hover { background: #1d507d; border-color: #1d507d; }
-.update-button:focus-visible, .update-dismiss:focus-visible { outline: 3px solid rgba(36,93,143,.2); outline-offset: 2px; }
-.update-button:disabled { border-color: #a8b4bf; background: #a8b4bf; cursor: not-allowed; }
-.update-button > span { font-size: 18px; line-height: 1; }
-.update-button.running > span { animation: update-spin .9s linear infinite; }
-.update-status {
-  min-height: 54px;
-  margin: 16px 42px 0;
-  padding: 11px 14px;
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  border: 1px solid #cad8e5;
-  border-radius: 9px;
-  background: #f7fafc;
-  color: var(--ink);
-}
-.update-status.success { border-color: #bfd6c6; background: #f4f9f5; }
-.update-status.error { border-color: #e2c3c3; background: #fcf6f6; }
-.update-status > div { min-width: 0; display: grid; gap: 2px; }
-.update-status strong { font-size: 14px; line-height: 1.35; }
-.update-status div > span { color: var(--muted); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
-.update-indicator { width: 10px; height: 10px; flex: 0 0 auto; border-radius: 50%; background: var(--accent); }
-.update-status.running .update-indicator { border: 2px solid #a9bfd2; border-top-color: var(--accent); background: transparent; animation: update-spin .9s linear infinite; }
-.update-status.success .update-indicator { background: var(--success); }
-.update-status.error .update-indicator { background: #a94c4c; }
-.update-dismiss { margin-left: auto; padding: 6px 8px; border: 0; background: transparent; color: var(--accent); font-size: 13px; cursor: pointer; }
-.update-dismiss:hover { text-decoration: underline; }
-@keyframes update-spin { to { transform: rotate(360deg); } }
 
 .content { max-width: 1420px; margin: 0 auto; padding: 0 42px 80px; }
 
@@ -547,8 +502,6 @@ kbd { padding: 2px 7px; border: 1px solid var(--line); border-radius: 5px; backg
   .global-search > span, kbd { display: none; }
   .top-actions { display: flex; }
   .top-actions .shortlist-button { display: none; }
-  .update-button { min-height: 42px; padding-inline: 10px; }
-  .update-status { margin: 12px 16px 0; align-items: flex-start; }
   .content { padding-inline: 16px; padding-bottom: 60px; }
 
   .latest-heading { align-items: flex-start; flex-direction: column; gap: 11px; }

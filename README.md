@@ -1,5 +1,7 @@
 # SecAtlas · 网安四大会论文图谱
 
+> 当前 static-publish 分支用于 Vercel 纯静态发布，不提供网页端数据更新。部署和后续数据同步方式见 [STATIC_PUBLISH.md](STATIC_PUBLISH.md)。
+
 SecAtlas 是面向个人课程与讨论班选题的本地论文知识库，覆盖 IEEE S&P、ACM CCS、USENIX Security 和 NDSS。当前数据集完整收录 2023–2025 三个出版年度，并持续同步 2026 年官网已经公开的录用论文。
 
 ## 已实现
