@@ -83,13 +83,14 @@ test("starter preview files are removed", async () => {
 
 
 
-test("local deployment exposes the safe web update path", async () => {
+test("deployment keeps the safe update implementation behind static read-only mode", async () => {
   const catalogApp = await readFile(new URL("../app/catalog-app.tsx", import.meta.url), "utf8");
   const server = await readFile(new URL("../pipeline/server.py", import.meta.url), "utf8");
   const packageJson = await readFile(new URL("../package.json", import.meta.url), "utf8");
   const staticHtml = await readFile(new URL("../dist/client/index.html", import.meta.url), "utf8");
   assert.match(catalogApp, /更新数据/);
-  assert.match(catalogApp, /\/api\/update/);
+  assert.match(catalogApp, /catalogAssetUrl\("api\/update"\)/);
+  assert.match(catalogApp, /STATIC_READ_ONLY = true/);
   assert.match(catalogApp, /update-status/);
   assert.match(server, /127\.0\.0\.1/);
   assert.match(server, /scope.*smart/);

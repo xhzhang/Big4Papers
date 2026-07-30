@@ -14,7 +14,12 @@ if (!response.ok) {
   throw new Error(`Static export failed with HTTP ${response.status}`);
 }
 
-const outputUrl = new URL("../dist/client/index.html", import.meta.url);
-await mkdir(new URL("../dist/client/", import.meta.url), { recursive: true });
-await writeFile(outputUrl, await response.text(), "utf8");
-console.log("Static site exported to dist/client/index.html");
+const outputDirectory = new URL("../dist/client/", import.meta.url);
+const html = await response.text();
+await mkdir(outputDirectory, { recursive: true });
+await Promise.all([
+  writeFile(new URL("index.html", outputDirectory), html, "utf8"),
+  writeFile(new URL("404.html", outputDirectory), html, "utf8"),
+  writeFile(new URL(".nojekyll", outputDirectory), "", "utf8"),
+]);
+console.log("Static site exported to dist/client with GitHub Pages fallbacks");

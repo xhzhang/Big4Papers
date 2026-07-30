@@ -108,6 +108,15 @@ function fmt(value: number) {
   return new Intl.NumberFormat("zh-CN").format(value);
 }
 
+const STATIC_BASE_PATH = (import.meta as ImportMeta & { env?: { BASE_URL?: string } }).env?.BASE_URL ?? "/";
+const STATIC_READ_ONLY = true;
+
+function catalogAssetUrl(source: string) {
+  const relativePath = source.replace(/^\/+/, "");
+  if (typeof window === "undefined") return `${STATIC_BASE_PATH}${relativePath}`;
+  return new URL(relativePath, new URL(STATIC_BASE_PATH, window.location.origin)).toString();
+}
+
 function initials(value: string) {
   return value
     .split(/\s+/)
@@ -367,7 +376,7 @@ export function CatalogApp() {
     const priorityYear = allYears.includes(requestedYear) ? requestedYear : Math.max(...allYears);
     const orderedYears = [priorityYear, ...allYears.filter((item) => item !== priorityYear).sort((a, b) => b - a)];
     const fetchShard = (item: number) => {
-      const source = manifest[String(item)];
+      const source = catalogAssetUrl(manifest[String(item)]);
       const separator = source.includes("?") ? "&" : "?";
       const url = `${source}${separator}v=${encodeURIComponent(rawData.generatedAt)}`;
       let request = paperShardCache.current.get(url);
@@ -408,7 +417,7 @@ export function CatalogApp() {
   }, [applyCatalogPreferences, initialUrlState.year, restoreCachedDetails]);
 
   useEffect(() => {
-    fetch("/catalog.json")
+    fetch(catalogAssetUrl("catalog.json"))
       .then((response) => {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return response.json() as Promise<CatalogPayload>;
@@ -424,7 +433,7 @@ export function CatalogApp() {
     const shards = await Promise.all(years.map(async (item) => {
       let request = detailShardCache.current.get(item);
       if (!request) {
-        request = fetch(manifest[String(item)], { cache: "force-cache" }).then(async (response) => {
+        request = fetch(catalogAssetUrl(manifest[String(item)]), { cache: "force-cache" }).then(async (response) => {
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           return response.json() as Promise<PaperDetailShard>;
         });
@@ -529,7 +538,11 @@ export function CatalogApp() {
   }, []);
 
   useEffect(() => {
-    fetch("/api/update", { cache: "no-store" })
+    if (STATIC_READ_ONLY) {
+      setUpdateApiAvailable(false);
+      return;
+    }
+    fetch(catalogAssetUrl("api/update"), { cache: "no-store" })
       .then((response) => {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return response.json();
@@ -546,12 +559,12 @@ export function CatalogApp() {
     let active = true;
     const poll = async () => {
       try {
-        const response = await fetch("/api/update", { cache: "no-store" });
+        const response = await fetch(catalogAssetUrl("api/update"), { cache: "no-store" });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const status: DataUpdateStatus = await response.json();
         if (!active) return;
         if (status.state === "success") {
-          const catalogResponse = await fetch(`/catalog.json?updated=${Date.now()}`, { cache: "no-store" });
+          const catalogResponse = await fetch(`${catalogAssetUrl("catalog.json")}?updated=${Date.now()}`, { cache: "no-store" });
           if (!catalogResponse.ok) throw new Error(`HTTP ${catalogResponse.status}`);
           const rawData: CatalogPayload = await catalogResponse.json();
           if (!active) return;
@@ -773,7 +786,7 @@ export function CatalogApp() {
   async function startDataUpdate() {
     setUpdateNoticeHidden(false);
     try {
-      const response = await fetch("/api/update", {
+      const response = await fetch(catalogAssetUrl("api/update"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ scope: "smart" }),
