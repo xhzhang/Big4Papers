@@ -8,7 +8,9 @@ import urllib.request
 from pipeline.classifier import classify
 from pipeline.config import VENUES
 from pipeline.store import Store
-from pipeline.tracks import CONTROLLED_TRACKS, canonicalize_track
+from pipeline.tracks import (
+    CONTROLLED_TRACKS, TRACK_RULESET_VERSION, canonicalize_track, explain_track, track_type,
+)
 from pipeline.sources.official import parse_ndss_paper, parse_usenix_schedule
 from pipeline.sources.sessions import parse_ndss_sessions, parse_sp_sessions, parse_usenix_sessions
 from pipeline.server import create_server, smart_update_years
@@ -31,6 +33,12 @@ class LocalServerTests(unittest.TestCase):
                 json.dumps({"coverage": {"years": [2023, 2024, 2025, 2026]}, "stats": {"papers": 4436}}),
                 encoding="utf-8",
             )
+            detail_root = root / "catalog-details"
+            detail_root.mkdir()
+            (detail_root / "2026.json").write_text(json.dumps({"year": 2026, "papers": {"paper-1": {"abstract": "Evidence"}}}), encoding="utf-8")
+            paper_root = root / "catalog-papers"
+            paper_root.mkdir()
+            (paper_root / "2026.json").write_text(json.dumps({"year": 2026, "papers": [{"id": "paper-1"}]}), encoding="utf-8")
             server = create_server(port=0, static_root=static_root, catalog_path=catalog_path)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
@@ -39,6 +47,10 @@ class LocalServerTests(unittest.TestCase):
                 self.assertIn("SecAtlas", urllib.request.urlopen(f"{base}/", timeout=3).read().decode())
                 catalog = json.load(urllib.request.urlopen(f"{base}/catalog.json", timeout=3))
                 self.assertEqual(catalog["stats"]["papers"], 4436)
+                detail = json.load(urllib.request.urlopen(f"{base}/catalog-details/2026.json", timeout=3))
+                self.assertEqual(detail["papers"]["paper-1"]["abstract"], "Evidence")
+                paper_index = json.load(urllib.request.urlopen(f"{base}/catalog-papers/2026.json", timeout=3))
+                self.assertEqual(paper_index["papers"][0]["id"], "paper-1")
                 status = json.load(urllib.request.urlopen(f"{base}/api/update", timeout=3))
                 self.assertEqual(status["state"], "idle")
                 request = urllib.request.Request(
@@ -193,8 +205,17 @@ class ClassifierTests(unittest.TestCase):
             "Applications of Cryptography 7": "Applied Cryptography",
             "Hardware Security III": "Hardware Security",
         }
+        self.assertEqual(track_type("Fuzzing"), "research")
+        self.assertEqual(track_type("Posters, Demos, and Workshops"), "program")
+        self.assertEqual(track_type("Miscellaneous"), "other")
         self.assertGreaterEqual(len(CONTROLLED_TRACKS), 38)
         self.assertLessEqual(len(CONTROLLED_TRACKS), 42)
+        explanation = explain_track("Session 3-2: ML and Security: Large Language Models")
+        self.assertEqual(explanation["track"], "LLM Security")
+        self.assertEqual(explanation["method"], "keyword-rule")
+        self.assertIn("language", str(explanation["matchedText"]).lower())
+        self.assertGreaterEqual(float(explanation["confidence"]), 0.9)
+        self.assertRegex(TRACK_RULESET_VERSION, r"^2026\.07-v\d+$")
         for raw, expected in examples.items():
             with self.subTest(raw=raw):
                 actual = canonicalize_track(raw)
@@ -261,6 +282,8 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(catalog[0]["authors"], ["Alice Example", "Bob Example"])
         self.assertEqual(catalog[0]["session"], "Session 1A: Authentication")
         self.assertEqual(catalog[0]["track"], "Authentication and Access Control")
+        self.assertEqual(catalog[0]["trackMapping"]["matchedText"].lower(), "authentication")
+        self.assertEqual(catalog[0]["trackMapping"]["method"], "keyword-rule")
         self.assertTrue(catalog[0]["tags"])
         store.close()
 

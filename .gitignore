@@ -52,3 +52,6 @@ next-env.d.ts
 /data/cache/
 
 *.tsbuildinfo
+
+# local design review artifacts
+/.impeccable/critique/

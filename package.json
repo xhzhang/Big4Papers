@@ -9,7 +9,7 @@
                     "dev":  "vinext dev",
                     "build":  "vinext build && node scripts/export-static.mjs",
                     "start":  "python -m pipeline.server --port 3000",
-                    "test":  "vinext build && node scripts/export-static.mjs && node --test tests/rendered-html.test.mjs",
+                    "test":  "vinext build && node scripts/export-static.mjs && node --test --test-isolation=none tests/rendered-html.test.mjs tests/usability-insights.test.mjs tests/team-detail.test.mjs tests/course-groups.test.mjs",
                     "lint":  "eslint . --ignore-pattern dist --ignore-pattern .next",
                     "db:generate":  "drizzle-kit generate"
                 },

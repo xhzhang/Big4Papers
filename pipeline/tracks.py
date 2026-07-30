@@ -5,6 +5,8 @@ import html
 import re
 
 
+TRACK_RULESET_VERSION = "2026.07-v1"
+
 CONTROLLED_TRACKS = (
     "AI and Machine Learning Security",
     "LLM Security",
@@ -49,6 +51,20 @@ CONTROLLED_TRACKS = (
     "Miscellaneous",
 )
 
+TRACK_TYPES = ("research", "program", "other")
+_PROGRAM_TRACKS = {"Posters, Demos, and Workshops"}
+_OTHER_TRACKS = {"", "Miscellaneous"}
+
+
+def track_type(track: str | None) -> str:
+    """Classify a normalized Track for research-direction analytics."""
+    value = (track or "").strip()
+    if value in _PROGRAM_TRACKS:
+        return "program"
+    if value in _OTHER_TRACKS:
+        return "other"
+    return "research"
+
 
 _DAY_PREFIX = re.compile(r"^\(?[A-Za-z]+ \d{1,2}\)?\s*[·|]\s*", re.I)
 _OUTER_SESSION = re.compile(r"^Session\s+\d+\s*[·|]\s*", re.I)
@@ -60,6 +76,14 @@ _NUMBERED_PART = re.compile(
     r"(?:\s+(?:#\d+|(?:[1-9]|1\d|20)|[IVX]{1,5})|\s*[-–—]\s*Part\s+\d+)\s*$",
     re.I,
 )
+
+
+_LOWER_CONFIDENCE_TRACKS = {
+    "AI and Machine Learning Security": 0.86,
+    "Privacy": 0.78,
+    "Human Factors and Security Measurement": 0.82,
+    "System Security": 0.72,
+}
 
 
 def _rule(pattern: str, label: str) -> tuple[re.Pattern[str], str]:
@@ -135,12 +159,8 @@ _CONTROLLED_RULES = (
 )
 
 
-def canonicalize_track(session: str | None) -> str:
-    """Map an official Session name to a stable cross-venue Track."""
+def _normalize_session(session: str | None) -> str:
     value = " ".join(html.unescape(session or "").split()).strip()
-    if not value:
-        return ""
-
     value = _DAY_PREFIX.sub("", value)
     value = _OUTER_SESSION.sub("", value)
     value = _TRACK_SESSION_PREFIX.sub("", value)
@@ -149,9 +169,46 @@ def canonicalize_track(session: str | None) -> str:
     value = _ENIGMA_PREFIX.sub("", value)
     value = _NUMBERED_PART.sub("", value).strip(" :-–—")
     value = re.sub(r"\s*&\s*", " and ", value)
-    value = re.sub(r"\s+", " ", value).strip()
+    return re.sub(r"\s+", " ", value).strip()
 
+
+def explain_track(session: str | None) -> dict[str, object]:
+    """Return the deterministic Session-to-Track decision and its evidence."""
+    raw_session = " ".join(html.unescape(session or "").split()).strip()
+    if not raw_session:
+        return {
+            "track": "",
+            "normalizedSession": "",
+            "method": "unavailable",
+            "ruleId": "no-official-session",
+            "matchedText": "",
+            "confidence": 0.0,
+        }
+
+    value = _normalize_session(raw_session)
     for pattern, canonical in _CONTROLLED_RULES:
-        if pattern.search(value):
-            return canonical
-    return "Miscellaneous"
+        match = pattern.search(value)
+        if match:
+            method = "program-rule" if track_type(canonical) == "program" else "keyword-rule"
+            rule_slug = re.sub(r"[^a-z0-9]+", "-", canonical.lower()).strip("-")
+            return {
+                "track": canonical,
+                "normalizedSession": value,
+                "method": method,
+                "ruleId": f"session-keyword:{rule_slug}",
+                "matchedText": match.group(0),
+                "confidence": _LOWER_CONFIDENCE_TRACKS.get(canonical, 0.92),
+            }
+    return {
+        "track": "Miscellaneous",
+        "normalizedSession": value,
+        "method": "fallback",
+        "ruleId": "session-keyword:no-match",
+        "matchedText": "",
+        "confidence": 0.25,
+    }
+
+
+def canonicalize_track(session: str | None) -> str:
+    """Map an official Session name to a stable cross-venue Track."""
+    return str(explain_track(session)["track"])

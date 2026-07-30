@@ -221,6 +221,23 @@ def handler_class(
             self.end_headers()
             self.wfile.write(body)
 
+        def _catalog_shard(self, folder: str, filename: str) -> None:
+            if not filename.endswith(".json") or Path(filename).name != filename:
+                self._json({"error": "数据分片不存在"}, HTTPStatus.NOT_FOUND)
+                return
+            try:
+                body = (catalog_path.parent / folder / filename).read_bytes()
+            except OSError:
+                self._json({"error": "数据分片尚未生成"}, HTTPStatus.NOT_FOUND)
+                return
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_GET(self) -> None:  # noqa: N802
             path = urlsplit(self.path).path
             if path == "/api/update":
@@ -228,6 +245,12 @@ def handler_class(
                 return
             if path == "/catalog.json":
                 self._catalog()
+                return
+            if path.startswith("/catalog-details/"):
+                self._catalog_shard("catalog-details", path.removeprefix("/catalog-details/"))
+                return
+            if path.startswith("/catalog-papers/"):
+                self._catalog_shard("catalog-papers", path.removeprefix("/catalog-papers/"))
                 return
             if path == "/":
                 self.path = "/index.html"

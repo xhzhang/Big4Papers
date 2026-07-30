@@ -5,12 +5,17 @@ import test from "node:test";
 const catalogSource = await readFile(new URL("../app/catalog-app.tsx", import.meta.url), "utf8");
 const excelSource = await readFile(new URL("../app/excel-export.ts", import.meta.url), "utf8");
 
-test("search remains a metadata substring search rather than PDF full text", () => {
-  const matchingFunction = catalogSource.match(/function matchingText\(paper: Paper\) \{[\s\S]*?\n\}/)?.[0] ?? "";
-  for (const field of ["paper.title", "paper.authors", "paper.abstract", "paper.summaryZh", "paper.track", "paper.session", "paper.primaryTopic", "paper.secondaryTopics", "paper.tags"]) {
-    assert.match(matchingFunction, new RegExp(field.replace(".", "\\.")));
+test("search explains weighted metadata and abstract matches without PDF full text", () => {
+  assert.match(catalogSource, /const SEARCH_FIELDS/);
+  for (const field of ["title", "authors", "abstract", "summary", "track", "session", "topics", "tags"]) {
+    assert.match(catalogSource, new RegExp(`field: "${field}"`));
   }
-  assert.doesNotMatch(matchingFunction, /pdf|full.?text/i);
+  assert.match(catalogSource, /function explainSearchMatch/);
+  assert.match(catalogSource, /命中字段/);
+  assert.match(catalogSource, /包含完整短语/);
+  assert.match(catalogSource, /按相关度排序/);
+  const searchModel = catalogSource.slice(catalogSource.indexOf("const SEARCH_FIELDS"), catalogSource.indexOf("type PaperDetailShard"));
+  assert.doesNotMatch(searchModel, /pdf|full.?text/i);
 });
 
 test("reading-list grouping is chosen when a paper is added", () => {
@@ -27,9 +32,9 @@ test("reading-list grouping is chosen when a paper is added", () => {
 });
 
 test("Track, Topic, and tag filters support multiple removable selections", () => {
-  assert.match(catalogSource, /const \[tracks, setTracks\] = useState<string\[\]>\(\[\]\)/);
-  assert.match(catalogSource, /const \[topics, setTopics\] = useState<string\[\]>\(\[\]\)/);
-  assert.match(catalogSource, /const \[tags, setTags\] = useState<string\[\]>\(\[\]\)/);
+  assert.match(catalogSource, /const \[tracks, setTracks\] = useState<string\[\]>\(initialUrlState\.tracks\)/);
+  assert.match(catalogSource, /const \[topics, setTopics\] = useState<string\[\]>\(initialUrlState\.topics\)/);
+  assert.match(catalogSource, /const \[tags, setTags\] = useState<string\[\]>\(initialUrlState\.tags\)/);
   assert.match(catalogSource, /tracks\.length && !tracks\.includes\(paper\.track\)/);
   assert.match(catalogSource, /topics\.length && !topics\.includes\(paper\.primaryTopic\)/);
   assert.match(catalogSource, /tags\.length && !paper\.tags\.some/);
@@ -51,5 +56,5 @@ test("reading-list export keeps the custom grouping", () => {
   assert.match(excelSource, /function courseGroupRows/);
   assert.match(excelSource, /name: "研读分组"/);
   assert.match(excelSource, /courseGroups\[paper\.id\] \|\| "未分组"/);
-  assert.match(catalogSource, /downloadPaperWorkbook\(shortlistPapers, "研读列表", shortlistGroups\)/);
+  assert.match(catalogSource, /downloadPaperWorkbook\(await papersWithDetails\(shortlistPapers\), "研读列表", shortlistGroups\)/);
 });
