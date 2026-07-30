@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from pipeline.tracks import canonicalize_track
+from pipeline.tracks import canonicalize_track, explain_track, track_type
 
 
 SCHEMA = """
@@ -478,6 +478,7 @@ class Store:
         result: list[dict[str, Any]] = []
         for row in rows:
             paper_id = row["id"]
+            track_mapping = explain_track(row["session"])
             authors = [
                 r["name"]
                 for r in self.db.execute(
@@ -511,6 +512,12 @@ class Store:
                     "year": row["year"],
                     "session": row["session"] or "",
                     "track": row["track"] or "",
+                    "trackType": track_type(row["track"]),
+                    "trackMapping": {
+                        key: value
+                        for key, value in track_mapping.items()
+                        if key != "track"
+                    },
                     "authors": authors,
                     "doi": row["doi"],
                     "sourceUrl": row["source_url"],

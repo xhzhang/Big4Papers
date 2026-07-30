@@ -1,5 +1,7 @@
-﻿import type { Metadata } from "next";
+import type { Metadata } from "next";
 import "./globals.css";
+import "./catalog-insights.css";
+import "./team-detail.css";
 
 export const metadata: Metadata = {
   title: "SecAtlas · 网安四大会论文图谱",

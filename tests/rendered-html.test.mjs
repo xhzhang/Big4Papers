@@ -5,11 +5,17 @@ import test from "node:test";
 
 
 async function render() {
-  const html = await readFile(new URL("../out/index.html", import.meta.url), "utf8");
-  return new Response(html, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } });
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
+  const { default: worker } = await import(workerUrl.href);
+  return worker.fetch(
+    new Request("http://localhost/", { headers: { accept: "text/html" } }),
+    { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
 }
 
-test("static export renders the SecAtlas application shell", async () => {
+test("server-renders the SecAtlas application shell", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
@@ -19,10 +25,16 @@ test("static export renders the SecAtlas application shell", async () => {
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/i);
 });
 
-test("catalog covers all four venues and the controlled priority taxonomy", async () => {
+test("catalog manifest and annual shards cover the complete corpus", async () => {
   const raw = await readFile(new URL("../public/catalog.json", import.meta.url), "utf8");
   const catalog = JSON.parse(raw);
-  assert.ok(catalog.stats.papers >= 3500, `expected full three-year catalog, got ${catalog.stats.papers}`);
+  const shards = await Promise.all(Object.values(catalog.paperShards).map(async (url) => {
+    const payload = JSON.parse(await readFile(new URL(`../public${url}`, import.meta.url), "utf8"));
+    return payload.papers;
+  }));
+  const papers = shards.flat();
+  assert.ok(catalog.stats.papers >= 3500, `expected full catalog, got ${catalog.stats.papers}`);
+  assert.ok(Buffer.byteLength(raw) < 250_000, "root manifest should stay lightweight");
   assert.deepEqual(catalog.coverage.years, [2023, 2024, 2025, 2026]);
   assert.deepEqual(catalog.coverage.venues.sort(), ["ACM CCS", "IEEE S&P", "NDSS", "USENIX Security"].sort());
   assert.deepEqual(catalog.priorityTopics, ["智能手机安全", "AIOS 安全", "认证安全", "智能体安全", "AI 硬件安全", "大模型安全"]);
@@ -32,9 +44,16 @@ test("catalog covers all four venues and the controlled priority taxonomy", asyn
   assert.ok(catalog.stats.sessions >= 700);
   assert.ok(catalog.stats.trackPapers >= 4300);
   assert.ok(catalog.stats.tracks >= 38 && catalog.stats.tracks <= 42);
-  assert.equal(catalog.papers.length, catalog.stats.papers);
-  assert.ok(catalog.papers.every((paper) => paper.title && paper.venue && paper.year && Array.isArray(paper.authors)));
-  assert.ok(catalog.papers.every((paper) => typeof paper.session === "string" && typeof paper.track === "string"));
+  assert.equal(papers.length, catalog.stats.papers);
+  assert.ok(papers.every((paper) => paper.title && paper.venue && paper.year && Array.isArray(paper.authors)));
+  assert.ok(papers.every((paper) => typeof paper.session === "string" && typeof paper.track === "string"));
+  assert.ok(papers.every((paper) => ["research", "program", "other"].includes(paper.trackType)));
+  assert.ok(papers.every((paper) => typeof paper.abstractAvailable === "boolean" && !("abstract" in paper) && !("trackMapping" in paper)));
+  assert.ok(papers.filter((paper) => paper.session).every((paper) => catalog.trackMappings[paper.session]));
+  assert.ok(Object.values(catalog.trackMappings).every((mapping) => mapping.ruleId && typeof mapping.confidence === "number"));
+  assert.match(catalog.trackRulesetVersion, /^2026\.07-v\d+$/);
+  assert.deepEqual(Object.keys(catalog.paperShards).sort(), ["2023", "2024", "2025", "2026"]);
+  assert.deepEqual(Object.keys(catalog.detailShards).sort(), ["2023", "2024", "2025", "2026"]);
   assert.equal(catalog.coverageStatus.length, 4);
   assert.ok(catalog.coverageStatus.some((item) => item.venue === "ACM CCS" && item.state === "awaiting"));
 });
@@ -53,7 +72,7 @@ test("starter preview files are removed", async () => {
   assert.match(catalogApp, /导出当前结果 Excel/);
   assert.match(catalogApp, /导出 Excel/);
   assert.match(catalogApp, /props\.tracks\.length === 0/);
-  assert.match(catalogApp, /归一化 Track/);
+  assert.match(catalogApp, /研究 Track/);
   assert.match(catalogApp, /官方 Session/);
   assert.match(excelExport, /name: "论文明细"/);
   assert.match(excelExport, /归一化 Track/);
@@ -64,21 +83,17 @@ test("starter preview files are removed", async () => {
 
 
 
-test("static-publish is a self-contained Vercel static site", async () => {
+test("local deployment exposes the safe web update path", async () => {
   const catalogApp = await readFile(new URL("../app/catalog-app.tsx", import.meta.url), "utf8");
+  const server = await readFile(new URL("../pipeline/server.py", import.meta.url), "utf8");
   const packageJson = await readFile(new URL("../package.json", import.meta.url), "utf8");
-  const vercelConfig = JSON.parse(await readFile(new URL("../vercel.json", import.meta.url), "utf8"));
-  const staticHtml = await readFile(new URL("../out/index.html", import.meta.url), "utf8");
-  const sourceCatalog = await readFile(new URL("../public/catalog.json", import.meta.url), "utf8");
-  const staticCatalog = await readFile(new URL("../out/catalog.json", import.meta.url), "utf8");
-
-  assert.doesNotMatch(catalogApp, /更新数据|\/api\/update|update-status/);
-  assert.match(catalogApp, /静态论文库/);
-  assert.match(packageJson, /"build": "next build"/);
-  assert.match(packageJson, /http\.server 3000 --directory out/);
-  assert.equal(vercelConfig.framework, null);
-  assert.equal(vercelConfig.outputDirectory, "out");
-  assert.equal(vercelConfig.buildCommand, "pnpm build");
-  assert.equal(staticCatalog, sourceCatalog);
+  const staticHtml = await readFile(new URL("../dist/client/index.html", import.meta.url), "utf8");
+  assert.match(catalogApp, /更新数据/);
+  assert.match(catalogApp, /\/api\/update/);
+  assert.match(catalogApp, /update-status/);
+  assert.match(server, /127\.0\.0\.1/);
+  assert.match(server, /scope.*smart/);
+  assert.doesNotMatch(server, /shell=True/);
+  assert.match(packageJson, /scripts\/export-static\.mjs/);
   assert.match(staticHtml, /<title>SecAtlas/);
 });
