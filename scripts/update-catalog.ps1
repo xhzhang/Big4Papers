@@ -1,20 +1,23 @@
 param(
-  [int[]]$Years = @(2023, 2024, 2025, 2026),
+  [int[]]$Years = @(((Get-Date).Year - 3)..((Get-Date).Year)),
   [switch]$Refresh
 )
 
 $ErrorActionPreference = "Stop"
-$syncArgs = @("-m", "pipeline", "sync", "--years") + ($Years | ForEach-Object { $_.ToString() })
+$yearArgs = $Years | ForEach-Object { $_.ToString() }
+$syncArgs = @("-m", "pipeline", "sync", "--years") + $yearArgs
 if ($Refresh) { $syncArgs += "--refresh" }
 python @syncArgs
-python -m pipeline enrich-official --years 2026 --venues usenix ndss --discover --details
+$officialArgs = @("-m", "pipeline", "enrich-official", "--years") + $yearArgs + @("--venues", "usenix", "ndss", "ccs", "--discover", "--prune-discovered", "--details")
+if ($Refresh) { $officialArgs += "--refresh" }
+python @officialArgs
 python -m pipeline enrich
-python -m pipeline enrich-official --years 2023 2024 2025 --details
-python -m pipeline enrich-titles --priority-only
-$sessionArgs = @("-m", "pipeline", "enrich-sessions", "--years") + ($Years | ForEach-Object { $_.ToString() })
+$titleArgs = @("-m", "pipeline", "enrich-titles", "--years") + $yearArgs + @("--venues", "usenix", "ccs")
+python @titleArgs
+$sessionArgs = @("-m", "pipeline", "enrich-sessions", "--years") + $yearArgs
 if ($Refresh) { $sessionArgs += "--refresh" }
 python @sessionArgs
-python -m pipeline analyze --provider rules
+python -m pipeline analyze --provider rules --only-pending
 python -m pipeline export --format web --output public/catalog.json
 Write-Host "SecAtlas catalog updated." -ForegroundColor Green
 

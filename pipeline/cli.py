@@ -14,7 +14,7 @@ from pipeline.config import PROMPT_VERSION, VENUES
 from pipeline.exporters import get_exporter
 from pipeline.sources.dblp import collect_venue_year
 from pipeline.sources.openalex import OpenAlexEnricher, normalize_title
-from pipeline.sources.official import collect_ndss_official, collect_usenix_official
+from pipeline.sources.official import collect_ccs_official, collect_ndss_official, collect_usenix_official
 from pipeline.sources.sessions import collect_venue_sessions
 from pipeline.store import Store
 from pipeline.summarizer import (
@@ -49,7 +49,14 @@ def command_sync(args: argparse.Namespace) -> None:
                 except RuntimeError as exc:
                     print(f"warning: {venue.short_name} {year} is not available from DBLP yet: {exc}")
                     continue
+                title_index = {
+                    normalize_title(row["title"]): row["id"]
+                    for row in store.papers_for_venue_year(venue_key, year)
+                }
                 for record in records:
+                    existing_id = title_index.get(normalize_title(record["title"]))
+                    if existing_id:
+                        record["id"] = existing_id
                     store.upsert_paper(record)
                 total += len(records)
                 print(f"{venue.short_name} {year}: {len(records)} papers")
@@ -84,8 +91,10 @@ def command_enrich_official(args: argparse.Namespace) -> None:
                 try:
                     if venue_key == "usenix":
                         records = collect_usenix_official(year, Path(args.cache), refresh=args.refresh, workers=args.workers, details=args.details)
-                    else:
+                    elif venue_key == "ndss":
                         records = collect_ndss_official(year, Path(args.cache), refresh=args.refresh, workers=args.workers)
+                    else:
+                        records = collect_ccs_official(year, Path(args.cache), refresh=args.refresh)
                 except (RuntimeError, ValueError) as exc:
                     print(f"warning: {venue_key} {year} official program unavailable: {exc}")
                     continue
@@ -105,6 +114,7 @@ def command_enrich_official(args: argparse.Namespace) -> None:
                                 "venue_key": venue_key,
                                 "year": year,
                                 "raw": {
+                                    **record.get("raw", {}),
                                     "official_discovery": True,
                                     "publication_state": "public-title",
                                 },
@@ -112,8 +122,17 @@ def command_enrich_official(args: argparse.Namespace) -> None:
                         )
                         store.upsert_paper(record, provider=f"{venue_key}-official")
                         matched += 1
+                pruned = 0
+                if args.prune_discovered:
+                    official_titles = {normalize_title(record["title"]) for record in records}
+                    stale_ids = [
+                        row["id"]
+                        for row in store.official_discoveries_for_venue_year(venue_key, year)
+                        if normalize_title(row["title"]) not in official_titles
+                    ]
+                    pruned = store.delete_papers(stale_ids)
                 total_matched += matched
-                print(f"{venue_key} {year}: matched {matched}/{len(records)} official records")
+                print(f"{venue_key} {year}: matched {matched}/{len(records)} official records; pruned {pruned} stale discoveries")
         print(f"Official enrichment matched {total_matched} records: {json.dumps(store.counts(), ensure_ascii=False)}")
     finally:
         store.close()
@@ -123,6 +142,10 @@ def command_enrich_titles(args: argparse.Namespace) -> None:
     store = open_store(args.db)
     try:
         records = [dict(row) for row in store.papers_for_enrichment() if not row["abstract"]]
+        if args.years:
+            records = [record for record in records if record["year"] in args.years]
+        if args.venues:
+            records = [record for record in records if record["venue_key"] in args.venues]
         if args.priority_only:
             from pipeline.config import PRIORITY_TOPICS
             records = [record for record in records if record["primary_topic"] in PRIORITY_TOPICS]
@@ -486,18 +509,21 @@ def build_parser() -> argparse.ArgumentParser:
     enrich.add_argument("--only-missing", action="store_true", help="Skip papers that already have an abstract")
     enrich.set_defaults(func=command_enrich)
 
-    enrich_official = sub.add_parser("enrich-official", help="Add abstracts and PDFs from official USENIX and NDSS pages")
+    enrich_official = sub.add_parser("enrich-official", help="Collect or enrich papers from official conference pages")
     enrich_official.add_argument("--years", nargs="+", type=int, default=[2023, 2024, 2025])
-    enrich_official.add_argument("--venues", nargs="+", choices=("usenix", "ndss"), default=["usenix", "ndss"])
+    enrich_official.add_argument("--venues", nargs="+", choices=("usenix", "ndss", "ccs"), default=["usenix", "ndss"])
     enrich_official.add_argument("--cache", default=str(DEFAULT_CACHE))
     enrich_official.add_argument("--workers", type=int, default=4)
     enrich_official.add_argument("--refresh", action="store_true")
     enrich_official.add_argument("--details", action="store_true", help="Fetch individual USENIX pages for direct PDF links")
     enrich_official.add_argument("--discover", action="store_true", help="Insert official records that are not available from DBLP yet")
+    enrich_official.add_argument("--prune-discovered", action="store_true", help="Remove stale official-discovery records absent from the refreshed list")
     enrich_official.set_defaults(func=command_enrich_official)
 
     enrich_titles = sub.add_parser("enrich-titles", help="Match records without DOI to OpenAlex by exact-like title")
     enrich_titles.add_argument("--mailto")
+    enrich_titles.add_argument("--years", nargs="+", type=int)
+    enrich_titles.add_argument("--venues", nargs="+", choices=tuple(VENUES))
     enrich_titles.add_argument("--priority-only", action="store_true")
     enrich_titles.add_argument("--workers", type=int, default=4)
     enrich_titles.add_argument("--limit", type=int)

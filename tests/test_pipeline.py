@@ -11,7 +11,7 @@ from pipeline.store import Store
 from pipeline.tracks import (
     CONTROLLED_TRACKS, TRACK_RULESET_VERSION, canonicalize_track, explain_track, track_type,
 )
-from pipeline.sources.official import parse_ndss_paper, parse_usenix_schedule
+from pipeline.sources.official import parse_ccs_accepted_papers, parse_ndss_paper, parse_usenix_schedule
 from pipeline.sources.sessions import parse_ndss_sessions, parse_sp_sessions, parse_usenix_sessions
 from pipeline.server import create_server, smart_update_years
 from pipeline.summarizer import SUMMARY_PROMPT_VERSION, summary_input_hash, validate_summary
@@ -175,6 +175,18 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(paper["summaryProvider"], "chatgpt-manual")
         store.close()
     def test_official_page_parsers(self):
+        ccs = parse_ccs_accepted_papers(
+            '<h3>First Cycle</h3><table><tr><th>Title</th><th>Author</th></tr>'
+            '<tr><td>CCS Paper</td><td>Alice Zhang (University A)<br />Bob Li (University B)</td></tr></table>'
+            '<h3>Second Cycle</h3><table><tr><th>Title</th><th>Author</th></tr>'
+            '<tr><td>Another Paper</td><td>Carol Wu (University C)</td></tr></table>'
+            '<!--<tr><td>Staged Paper</td><td>Dan Yu (University D)</td></tr>-->',
+            "https://www.sigsac.org/ccs/CCS2026/program/accepted-papers.html",
+        )
+        self.assertEqual([record["title"] for record in ccs], ["CCS Paper", "Another Paper", "Staged Paper"])
+        self.assertEqual(ccs[0]["authors"], ["Alice Zhang", "Bob Li"])
+        self.assertEqual(ccs[1]["raw"]["acceptance_cycle"], "Second Cycle")
+        self.assertEqual(ccs[2]["raw"]["official_visibility"], "html-comment")
         usenix = parse_usenix_schedule(
             '<article class="node node-paper"><h2><a href="/paper">Paper Title</a></h2>'
             '<div class="field-name-field-paper-people-text"><p>Alice Zhang, <em>University A;</em> Bob Li and Carol Wu, <em>University B</em></p></div>'
@@ -191,6 +203,34 @@ class ClassifierTests(unittest.TestCase):
         )
         self.assertEqual(ndss["abstract"], "NDSS abstract.")
         self.assertEqual(ndss["pdf_url"], "https://example.org/paper.pdf")
+
+    def test_stale_official_discoveries_can_be_pruned(self):
+        store = Store(":memory:")
+        store.register_venues(VENUES.values())
+        paper_id = store.upsert_paper(
+            {
+                "title": "Invited Talk, Not a Paper",
+                "venue_key": "usenix",
+                "year": 2026,
+                "authors": ["Alice Example"],
+                "source_url": "https://example.org/talk",
+                "raw": {"official_discovery": True},
+            },
+            provider="usenix-official",
+        )
+        discoveries = store.official_discoveries_for_venue_year("usenix", 2026)
+        self.assertEqual([row["id"] for row in discoveries], [paper_id])
+        store.update_official(
+            paper_id,
+            "usenix",
+            {"title": "Invited Talk, Not a Paper", "raw": {"official_visibility": "visible"}},
+        )
+        merged_raw = json.loads(store.paper_by_id(paper_id)["raw_metadata"])
+        self.assertTrue(merged_raw["official_discovery"])
+        self.assertEqual(merged_raw["official_visibility"], "visible")
+        self.assertEqual(store.delete_papers([paper_id]), 1)
+        self.assertIsNone(store.paper_by_id(paper_id))
+        store.close()
 
     def test_track_normalization(self):
         examples = {

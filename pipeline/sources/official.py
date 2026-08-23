@@ -11,8 +11,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urljoin
 
+from bs4 import BeautifulSoup, Comment
 
-USER_AGENT = "Mozilla/5.0 (compatible; SecAtlas/0.1; academic metadata catalog)"
+
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0 Safari/537.36 "
+    "SecAtlas/0.1"
+)
 
 
 def download_text(url: str, target: Path, refresh: bool = False) -> str:
@@ -87,6 +93,65 @@ def parse_usenix_schedule(page: str, base_url: str) -> list[dict]:
     return records
 
 
+def _ccs_author_name(value: str) -> str:
+    """Drop the parenthesized affiliation published after a CCS author name."""
+    return value.split(" (", 1)[0].strip(" ,;")
+
+
+def parse_ccs_accepted_papers(page: str, source_url: str) -> list[dict]:
+    """Parse visible and staged acceptance cycles from the official CCS page."""
+    soup = BeautifulSoup(page, "html.parser")
+    records: list[dict] = []
+    seen: set[str] = set()
+
+    def append_rows(rows: list, cycle: str, visibility: str) -> None:
+        for row in rows:
+            cells = row.find_all(["td", "th"], recursive=False)
+            if len(cells) < 2:
+                continue
+            title = clean(cells[0].decode_contents())
+            if not title or title.lower() == "title":
+                continue
+            key = re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            authors = [
+                _ccs_author_name(clean(fragment))
+                for fragment in re.split(r"<br\s*/?>", cells[1].decode_contents(), flags=re.I)
+            ]
+            records.append(
+                {
+                    "title": title,
+                    "authors": [author for author in authors if author],
+                    "source_url": source_url,
+                    "record_url": source_url,
+                    "abstract": "",
+                    "pdf_url": None,
+                    "raw": {
+                        "acceptance_cycle": cycle,
+                        "official_visibility": visibility,
+                    },
+                }
+            )
+
+    for table in soup.select("table"):
+        heading = table.find_previous(
+            lambda tag: tag.name in {"h1", "h2", "h3", "h4", "h5", "h6"}
+            and "cycle" in tag.get_text(" ", strip=True).lower()
+        )
+        cycle = clean(heading.get_text(" ", strip=True)) if heading else ""
+        append_rows(table.select("tr"), cycle, "visible")
+
+    staged_cycle = "Second Cycle" if "Second Cycle" in page else "Staged Cycle"
+    for comment in soup.find_all(string=lambda value: isinstance(value, Comment)):
+        if "<tr" not in comment or "<td" not in comment:
+            continue
+        fragment = BeautifulSoup(f"<table>{comment}</table>", "html.parser")
+        append_rows(fragment.select("tr"), staged_cycle, "html-comment")
+    return records
+
+
 def parse_ndss_index(page: str) -> list[dict]:
     return [
         {"title": clean(title), "source_url": url}
@@ -135,6 +200,15 @@ def collect_usenix_official(year: int, cache_dir: Path, refresh: bool = False, w
             if index % 100 == 0:
                 print(f"USENIX {year} official pages {index}/{len(records)}")
     return enriched
+
+
+def collect_ccs_official(year: int, cache_dir: Path, refresh: bool = False) -> list[dict]:
+    url = f"https://www.sigsac.org/ccs/CCS{year}/program/accepted-papers.html"
+    page = download_text(url, cache_dir / f"ccs-{year}-official.html", refresh=refresh)
+    records = parse_ccs_accepted_papers(page, url)
+    if not records:
+        raise ValueError(f"CCS {year} accepted-paper tables are unavailable")
+    return records
 
 
 def collect_ndss_official(year: int, cache_dir: Path, refresh: bool = False, workers: int = 4) -> list[dict]:
