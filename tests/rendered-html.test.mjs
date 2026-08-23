@@ -55,7 +55,8 @@ test("catalog manifest and annual shards cover the complete corpus", async () =>
   assert.deepEqual(Object.keys(catalog.paperShards).sort(), ["2023", "2024", "2025", "2026"]);
   assert.deepEqual(Object.keys(catalog.detailShards).sort(), ["2023", "2024", "2025", "2026"]);
   assert.equal(catalog.coverageStatus.length, 4);
-  assert.ok(catalog.coverageStatus.some((item) => item.venue === "ACM CCS" && item.state === "awaiting"));
+  assert.ok(catalog.coverageStatus.some((item) => item.venue === "ACM CCS" && item.state === "partial" && item.publishedCount === 383));
+  assert.ok(catalog.coverageStatus.some((item) => item.venue === "USENIX Security" && item.state === "complete" && item.publishedCount === 380));
 });
 
 test("starter preview files are removed", async () => {

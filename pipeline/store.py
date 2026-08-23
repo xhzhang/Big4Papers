@@ -283,10 +283,33 @@ class Store:
             (venue_key, year),
         ))
 
+    def official_discoveries_for_venue_year(self, venue_key: str, year: int) -> list[sqlite3.Row]:
+        return list(
+            self.db.execute(
+                """SELECT id, title FROM papers
+                   WHERE venue_key=? AND year=? AND dblp_key IS NULL
+                     AND instr(COALESCE(raw_metadata, ''), '\"official_discovery\": true') > 0""",
+                (venue_key, year),
+            )
+        )
+
+    def delete_papers(self, paper_ids: list[str]) -> int:
+        if not paper_ids:
+            return 0
+        with self.transaction():
+            self.db.executemany("DELETE FROM papers WHERE id=?", ((paper_id,) for paper_id in paper_ids))
+        return len(paper_ids)
+
     def update_official(self, paper_id: str, provider: str, record: dict[str, Any]) -> None:
         abstract = record.get("abstract") or None
         pdf_url = record.get("pdf_url") or None
         source_url = record.get("source_url") or None
+        current = self.db.execute("SELECT raw_metadata FROM papers WHERE id=?", (paper_id,)).fetchone()
+        try:
+            raw_metadata = json.loads(current["raw_metadata"] or "{}") if current else {}
+        except json.JSONDecodeError:
+            raw_metadata = {}
+        raw_metadata.update(record.get("raw") or {})
         self.db.execute(
             """UPDATE papers SET
                  abstract=COALESCE(?, abstract),
@@ -294,9 +317,19 @@ class Store:
                  source_url=COALESCE(?, source_url),
                  session=COALESCE(?, session),
                  track=COALESCE(?, track),
+                 raw_metadata=?,
                  updated_at=?
                WHERE id=?""",
-            (abstract, pdf_url, source_url, record.get("session") or None, record.get("track") or None, utc_now(), paper_id),
+            (
+                abstract,
+                pdf_url,
+                source_url,
+                record.get("session") or None,
+                record.get("track") or None,
+                json.dumps(raw_metadata, ensure_ascii=False),
+                utc_now(),
+                paper_id,
+            ),
         )
         for field, value in (("abstract", abstract), ("pdf_url", pdf_url), ("source_url", source_url)):
             if value:
