@@ -118,14 +118,16 @@ class UpdateCoordinator:
                     "--venues",
                     "usenix",
                     "ndss",
+                    "ccs",
                     "--discover",
+                    "--prune-discovered",
                     "--details",
                     "--refresh",
                 ],
             ),
             ("sessions", "正在同步官方 Session 与 Track", ["enrich-sessions", "--years", *year_args, "--refresh"]),
             ("metadata", "正在补充缺失摘要与开放 PDF", ["enrich", "--only-missing"]),
-            ("titles", "正在匹配重点方向缺失信息", ["enrich-titles", "--priority-only"]),
+            ("titles", "正在匹配重点方向缺失信息", ["enrich-titles", "--years", *year_args]),
             ("analysis", "正在分析新增论文方向与标签", ["analyze", "--provider", "rules", "--only-pending"]),
         ]
         summary_configured = all(
