@@ -7,7 +7,7 @@
 - `data/papers.sqlite3` 是本地权威数据库，由 Git 忽略，不上传到 Vercel。
 - `public/catalog.json` 保存轻量元数据与分片清单。
 - `public/catalog-papers/{year}.json` 保存年度论文索引，`public/catalog-details/{year}.json` 保存按需加载的英文摘要。
-- 当前静态快照覆盖 2023—2026 年四个会议，共 4,436 篇论文。
+- 静态快照的数据范围和数量以网页“数据中心”及 `public/catalog.json` 为准；最近核查见 [数据更新记录](DATA_UPDATES.md)。
 - 研读列表、分组和常用方向保存在浏览器 `localStorage` 中，不需要云数据库。
 
 ## 本地验证
