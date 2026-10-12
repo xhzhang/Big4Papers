@@ -183,10 +183,10 @@ class ClassifierTests(unittest.TestCase):
             '<!--<tr><td>Staged Paper</td><td>Dan Yu (University D)</td></tr>-->',
             "https://www.sigsac.org/ccs/CCS2026/program/accepted-papers.html",
         )
-        self.assertEqual([record["title"] for record in ccs], ["CCS Paper", "Another Paper", "Staged Paper"])
+        self.assertEqual([record["title"] for record in ccs], ["CCS Paper", "Another Paper"])
         self.assertEqual(ccs[0]["authors"], ["Alice Zhang", "Bob Li"])
         self.assertEqual(ccs[1]["raw"]["acceptance_cycle"], "Second Cycle")
-        self.assertEqual(ccs[2]["raw"]["official_visibility"], "html-comment")
+        self.assertTrue(all(record["raw"]["official_visibility"] == "visible" for record in ccs))
         usenix = parse_usenix_schedule(
             '<article class="node node-paper"><h2><a href="/paper">Paper Title</a></h2>'
             '<div class="field-name-field-paper-people-text"><p>Alice Zhang, <em>University A;</em> Bob Li and Carol Wu, <em>University B</em></p></div>'
@@ -255,7 +255,7 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(explanation["method"], "keyword-rule")
         self.assertIn("language", str(explanation["matchedText"]).lower())
         self.assertGreaterEqual(float(explanation["confidence"]), 0.9)
-        self.assertRegex(TRACK_RULESET_VERSION, r"^2026\.07-v\d+$")
+        self.assertRegex(TRACK_RULESET_VERSION, r"^2026\.(07|10)-v\d+$")
         for raw, expected in examples.items():
             with self.subTest(raw=raw):
                 actual = canonicalize_track(raw)

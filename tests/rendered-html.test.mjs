@@ -45,18 +45,29 @@ test("catalog manifest and annual shards cover the complete corpus", async () =>
   assert.ok(catalog.stats.trackPapers >= 4300);
   assert.ok(catalog.stats.tracks >= 38 && catalog.stats.tracks <= 42);
   assert.equal(papers.length, catalog.stats.papers);
+  assert.equal(new Set(papers.map((paper) => paper.id)).size, papers.length, "paper identities must stay unique");
+  assert.equal(catalog.stats.semanticSummaries, papers.length, "publish only after completing Chinese summaries");
+  assert.ok(papers.every((paper) => paper.summaryZh && ["abstract-grounded", "title-only", "human"].includes(paper.summaryStatus)));
+  assert.ok(papers.filter((paper) => paper.summaryStatus === "title-only").every((paper) => /仅从标题可知/.test(paper.summaryZh)));
   assert.ok(papers.every((paper) => paper.title && paper.venue && paper.year && Array.isArray(paper.authors)));
   assert.ok(papers.every((paper) => typeof paper.session === "string" && typeof paper.track === "string"));
   assert.ok(papers.every((paper) => ["research", "program", "other"].includes(paper.trackType)));
   assert.ok(papers.every((paper) => typeof paper.abstractAvailable === "boolean" && !("abstract" in paper) && !("trackMapping" in paper)));
   assert.ok(papers.filter((paper) => paper.session).every((paper) => catalog.trackMappings[paper.session]));
   assert.ok(Object.values(catalog.trackMappings).every((mapping) => mapping.ruleId && typeof mapping.confidence === "number"));
-  assert.match(catalog.trackRulesetVersion, /^2026\.07-v\d+$/);
+  assert.match(catalog.trackRulesetVersion, /^2026\.(07|10)-v\d+$/);
   assert.deepEqual(Object.keys(catalog.paperShards).sort(), ["2023", "2024", "2025", "2026"]);
   assert.deepEqual(Object.keys(catalog.detailShards).sort(), ["2023", "2024", "2025", "2026"]);
   assert.equal(catalog.coverageStatus.length, 4);
-  assert.ok(catalog.coverageStatus.some((item) => item.venue === "ACM CCS" && item.state === "partial" && item.publishedCount === 383));
-  assert.ok(catalog.coverageStatus.some((item) => item.venue === "USENIX Security" && item.state === "complete" && item.publishedCount === 380));
+  assert.ok(catalog.coverageStatus.some((item) => item.venue === "ACM CCS" && item.publishedCount === 483));
+  assert.ok(catalog.coverageStatus.some((item) => item.venue === "USENIX Security" && item.state === "complete" && item.publishedCount === 362));
+  for (const status of catalog.coverageStatus) {
+    const collected = papers.filter((paper) => paper.venue === status.venue && paper.year === status.year);
+    assert.equal(collected.length, status.collectedCount);
+    if (["IEEE S&P", "ACM CCS", "USENIX Security"].includes(status.venue) && status.year === 2026) {
+      assert.ok(collected.every((paper) => paper.session && paper.track), `${status.venue}: official Session missing`);
+    }
+  }
 });
 
 test("starter preview files are removed", async () => {
