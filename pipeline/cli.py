@@ -11,10 +11,11 @@ from pathlib import Path
 from pipeline.analyzers import CompatibleLLMAnalyzer
 from pipeline.classifier import classify
 from pipeline.config import PROMPT_VERSION, VENUES
+from pipeline.reconcile import match_official_records
 from pipeline.exporters import get_exporter
 from pipeline.sources.dblp import collect_venue_year
 from pipeline.sources.openalex import OpenAlexEnricher, normalize_title
-from pipeline.sources.official import collect_ccs_official, collect_ndss_official, collect_usenix_official
+from pipeline.sources.official import collect_ccs_official, collect_ndss_official, collect_sp_official, collect_usenix_official
 from pipeline.sources.sessions import collect_venue_sessions
 from pipeline.store import Store
 from pipeline.summarizer import (
@@ -49,12 +50,10 @@ def command_sync(args: argparse.Namespace) -> None:
                 except RuntimeError as exc:
                     print(f"warning: {venue.short_name} {year} is not available from DBLP yet: {exc}")
                     continue
-                title_index = {
-                    normalize_title(row["title"]): row["id"]
-                    for row in store.papers_for_venue_year(venue_key, year)
-                }
-                for record in records:
-                    existing_id = title_index.get(normalize_title(record["title"]))
+                records = list(records)
+                matches = match_official_records(records, store.paper_records_for_venue_year(venue_key, year))
+                for index, record in enumerate(records):
+                    existing_id = matches.get(index)
                     if existing_id:
                         record["id"] = existing_id
                     store.upsert_paper(record)
@@ -93,20 +92,22 @@ def command_enrich_official(args: argparse.Namespace) -> None:
                         records = collect_usenix_official(year, Path(args.cache), refresh=args.refresh, workers=args.workers, details=args.details)
                     elif venue_key == "ndss":
                         records = collect_ndss_official(year, Path(args.cache), refresh=args.refresh, workers=args.workers)
+                    elif venue_key == "sp":
+                        records = collect_sp_official(year, Path(args.cache), refresh=args.refresh)
                     else:
                         records = collect_ccs_official(year, Path(args.cache), refresh=args.refresh)
                 except (RuntimeError, ValueError) as exc:
                     print(f"warning: {venue_key} {year} official program unavailable: {exc}")
                     continue
-                title_index = {
-                    normalize_title(row["title"]): row["id"]
-                    for row in store.papers_for_venue_year(venue_key, year)
-                }
+                papers = store.paper_records_for_venue_year(venue_key, year)
+                matches = match_official_records(records, papers)
                 matched = 0
-                for record in records:
-                    paper_id = title_index.get(normalize_title(record["title"]))
+                matched_ids: set[str] = set()
+                for index, record in enumerate(records):
+                    paper_id = matches.get(index)
                     if paper_id:
                         store.update_official(paper_id, venue_key, record)
+                        matched_ids.add(paper_id)
                         matched += 1
                     elif args.discover and record["title"].strip().lower() != "paper title under embargo":
                         record.update(
@@ -116,23 +117,30 @@ def command_enrich_official(args: argparse.Namespace) -> None:
                                 "raw": {
                                     **record.get("raw", {}),
                                     "official_discovery": True,
-                                    "publication_state": "public-title",
+                                    "publication_state": record.get("raw", {}).get("publication_state", "public-title"),
                                 },
                             }
                         )
-                        store.upsert_paper(record, provider=f"{venue_key}-official")
+                        paper_id = store.upsert_paper(record, provider=f"{venue_key}-official")
+                        matched_ids.add(paper_id)
                         matched += 1
                 pruned = 0
                 if args.prune_discovered:
-                    official_titles = {normalize_title(record["title"]) for record in records}
                     stale_ids = [
                         row["id"]
                         for row in store.official_discoveries_for_venue_year(venue_key, year)
-                        if normalize_title(row["title"]) not in official_titles
+                        if row["id"] not in matched_ids
                     ]
-                    pruned = store.delete_papers(stale_ids)
+                    if len(records) < max(1, len(papers) * 0.8):
+                        print(f"warning: {venue_key} {year} list is unexpectedly small; retained {len(stale_ids)} unmatched discoveries")
+                    else:
+                        pruned = store.archive_papers(
+                            stale_ids,
+                            reason=f"{venue_key} {year}: not present in refreshed visible research-paper list",
+                            source_url=records[0].get("record_url") or records[0].get("source_url") if records else None,
+                        )
                 total_matched += matched
-                print(f"{venue_key} {year}: matched {matched}/{len(records)} official records; pruned {pruned} stale discoveries")
+                print(f"{venue_key} {year}: matched {matched}/{len(records)} official records; archived {pruned} stale/non-paper discoveries")
         print(f"Official enrichment matched {total_matched} records: {json.dumps(store.counts(), ensure_ascii=False)}")
     finally:
         store.close()
@@ -511,16 +519,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     enrich_official = sub.add_parser("enrich-official", help="Collect or enrich papers from official conference pages")
     enrich_official.add_argument("--years", nargs="+", type=int, default=[2023, 2024, 2025])
-    enrich_official.add_argument("--venues", nargs="+", choices=("usenix", "ndss", "ccs"), default=["usenix", "ndss"])
+    enrich_official.add_argument("--venues", nargs="+", choices=("usenix", "ndss", "ccs", "sp"), default=["usenix", "ndss"])
     enrich_official.add_argument("--cache", default=str(DEFAULT_CACHE))
     enrich_official.add_argument("--workers", type=int, default=4)
     enrich_official.add_argument("--refresh", action="store_true")
     enrich_official.add_argument("--details", action="store_true", help="Fetch individual USENIX pages for direct PDF links")
     enrich_official.add_argument("--discover", action="store_true", help="Insert official records that are not available from DBLP yet")
-    enrich_official.add_argument("--prune-discovered", action="store_true", help="Remove stale official-discovery records absent from the refreshed list")
+    enrich_official.add_argument("--prune-discovered", action="store_true", help="Archive stale/non-paper official discoveries absent from the refreshed visible list")
     enrich_official.set_defaults(func=command_enrich_official)
 
-    enrich_titles = sub.add_parser("enrich-titles", help="Match records without DOI to OpenAlex by exact-like title")
+    enrich_titles = sub.add_parser("enrich-titles", help="Match records without DOI to OpenAlex by exact normalized title")
     enrich_titles.add_argument("--mailto")
     enrich_titles.add_argument("--years", nargs="+", type=int)
     enrich_titles.add_argument("--venues", nargs="+", choices=tuple(VENUES))

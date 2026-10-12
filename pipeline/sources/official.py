@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urljoin
 
-from bs4 import BeautifulSoup, Comment
+from bs4 import BeautifulSoup, NavigableString, Tag
 
 
 USER_AGENT = (
@@ -61,35 +61,94 @@ def parse_usenix_authors(fragment: str) -> list[str]:
     return list(dict.fromkeys(authors))
 
 
-def parse_usenix_schedule(page: str, base_url: str) -> list[dict]:
-    records = []
-    for block in re.findall(r"<article\b[^>]*class=\"[^\"]*node-paper[^\"]*\"[^>]*>(.*?)</article>", page, flags=re.I | re.S):
-        title_match = re.search(r"<h2[^>]*>\s*<a[^>]+href=\"([^\"]+)\"[^>]*>(.*?)</a>", block, flags=re.I | re.S)
-        if not title_match:
+def is_usenix_research_article(article: Tag) -> bool:
+    """USENIX also renders invited talks and historical discussions as node-paper.
+
+    The enclosing session and the explicit presenter field distinguish these
+    entries from proceedings papers. Title keywords alone are not sufficient:
+    a research paper can legitimately study Enigma or discuss lessons learned.
+    """
+    session = article.find_parent("article", class_="node-session")
+    heading = session.find("h2", recursive=False) if session else None
+    context = heading.get_text(" ", strip=True) if heading else ""
+    if re.search(r"\bEnigma\s+Track\b|\bTest\s+of\s+Time\b|\b(?:invited|keynote)\s+talk", context, flags=re.I):
+        return False
+    people = article.select_one(".field-name-field-paper-people-text")
+    if article.select_one(".field-name-field-presented-by") and not people:
+        return False
+    return True
+
+
+def _usenix_abstract(root: Tag) -> str:
+    description = root.select_one(".field-name-field-paper-description-long") or root.select_one(".field-name-field-paper-description")
+    if not description:
+        return ""
+    paragraphs = description.find_all("p")
+    value = " ".join(node.get_text(" ", strip=True) for node in paragraphs) if paragraphs else description.get_text(" ", strip=True)
+    value = " ".join(value.split())
+    if re.match(r"this paper(?: and abstract)? (?:is|are) (?:currently )?under embargo", value, flags=re.I):
+        return ""
+    return value
+
+
+def _paper_pdf_url(root: Tag, source_url: str) -> str | None:
+    """Prefer explicit citation metadata, then an actual paper PDF (not slides)."""
+    for meta in root.find_all("meta"):
+        if str(meta.get("name", "")).lower() == "citation_pdf_url" and meta.get("content"):
+            candidate = urljoin(source_url, html.unescape(str(meta["content"])))
+            if re.search(r"\.pdf(?:[?#]|$)", candidate, flags=re.I):
+                return candidate
+    candidates: list[tuple[int, str]] = []
+    for link in root.find_all("a", href=True):
+        href = urljoin(source_url, html.unescape(str(link["href"])))
+        if not re.search(r"\.pdf(?:[?#]|$)", href, flags=re.I):
             continue
-        title = clean(title_match.group(2))
-        source_url = urljoin(base_url, title_match.group(1))
-        people_match = re.search(
-            r"field-name-field-paper-people-text.*?<p>(.*?)</p>",
-            block,
-            flags=re.I | re.S,
-        )
-        description_start = block.find("field-name-field-paper-description-long")
-        description = block[description_start:] if description_start >= 0 else ""
-        paragraphs = re.findall(r"<p\b[^>]*>(.*?)</p>", description, flags=re.I | re.S)
-        abstract = " ".join(part for part in (clean(item) for item in paragraphs) if part)
-        if abstract.lower().startswith("this paper is currently under embargo"):
-            abstract = ""
-        records.append(
-            {
-                "title": title,
-                "authors": parse_usenix_authors(people_match.group(1)) if people_match else [],
-                "source_url": source_url,
-                "record_url": source_url,
-                "abstract": abstract,
-                "pdf_url": None,
-            }
-        )
+        label = link.get_text(" ", strip=True).lower()
+        media = " ".join((label, href.lower(), " ".join(link.get("class", []))))
+        if re.search(r"slides?|presentation|poster|artifact|appendix|supplement", media):
+            continue
+        score = 0
+        if re.search(r"\b(?:full\s+)?paper\b|download.*pdf", label):
+            score += 3
+        if re.search(r"/(?:sec\d+[-_]paper[-_]|papers?/)|/[^/]*[-_]paper[-_][^/]*\.pdf", href, flags=re.I):
+            score += 2
+        if re.search(r"/system/files/(?:conference/[^/]+/)?(?:sec\d+[-_]|usenixsecurity\d+[-_])", href, flags=re.I):
+            score += 1
+        if score:
+            candidates.append((score, href))
+    return max(candidates, key=lambda pair: pair[0])[1] if candidates else None
+
+
+def parse_usenix_paper(page: str, source_url: str) -> dict:
+    soup = BeautifulSoup(page, "html.parser")
+    people = soup.select_one(".field-name-field-paper-people-text")
+    return {
+        "abstract": _usenix_abstract(soup),
+        "authors": parse_usenix_authors(people.decode_contents()) if people else [],
+        "pdf_url": _paper_pdf_url(soup, source_url),
+    }
+
+
+def parse_usenix_schedule(page: str, base_url: str) -> list[dict]:
+    soup = BeautifulSoup(page, "html.parser")
+    records: list[dict] = []
+    for article in soup.select("article.node-paper"):
+        if not is_usenix_research_article(article):
+            continue
+        title_link = article.select_one("h2 a[href]")
+        if not title_link:
+            continue
+        source_url = urljoin(base_url, str(title_link["href"]))
+        people = article.select_one(".field-name-field-paper-people-text")
+        records.append({
+            "title": title_link.get_text(" ", strip=True),
+            "authors": parse_usenix_authors(people.decode_contents()) if people else [],
+            "source_url": source_url,
+            "record_url": source_url,
+            "abstract": _usenix_abstract(article),
+            "pdf_url": _paper_pdf_url(article, source_url),
+            "raw": {"official_item_type": "research-paper", "official_program_url": base_url},
+        })
     return records
 
 
@@ -99,7 +158,7 @@ def _ccs_author_name(value: str) -> str:
 
 
 def parse_ccs_accepted_papers(page: str, source_url: str) -> list[dict]:
-    """Parse visible and staged acceptance cycles from the official CCS page."""
+    """Parse published acceptance tables, never commented historical templates."""
     soup = BeautifulSoup(page, "html.parser")
     records: list[dict] = []
     seen: set[str] = set()
@@ -143,13 +202,75 @@ def parse_ccs_accepted_papers(page: str, source_url: str) -> list[dict]:
         cycle = clean(heading.get_text(" ", strip=True)) if heading else ""
         append_rows(table.select("tr"), cycle, "visible")
 
-    staged_cycle = "Second Cycle" if "Second Cycle" in page else "Staged Cycle"
-    for comment in soup.find_all(string=lambda value: isinstance(value, Comment)):
-        if "<tr" not in comment or "<td" not in comment:
-            continue
-        fragment = BeautifulSoup(f"<table>{comment}</table>", "html.parser")
-        append_rows(fragment.select("tr"), staged_cycle, "html-comment")
     return records
+
+
+def _sp_authors(author_block: Tag | None) -> list[str]:
+    if not author_block:
+        return []
+    # Affiliations follow the first line break; superscripts are affiliation IDs.
+    parts: list[str] = []
+    for child in author_block.children:
+        if isinstance(child, Tag) and child.name == "br":
+            break
+        if isinstance(child, Tag) and child.name == "sup":
+            continue
+        parts.append(str(child) if isinstance(child, NavigableString) else child.get_text(" ", strip=True))
+    names = re.split(r",|\s+(?:and|&)\s+", " ".join(parts))
+    return [name for item in names if (name := " ".join(item.split()).strip(" ,;"))]
+
+
+def _sp_records(page: str, source_url: str, *, accepted: bool) -> list[dict]:
+    soup = BeautifulSoup(page, "html.parser")
+    records: list[dict] = []
+    seen: set[str] = set()
+    listed_year = re.search(r"(?:sp|SP)(\d{4})", source_url)
+    for item in soup.select(".list-group-item"):
+        title_link = item.select_one("b > a[href^='#collapse-']")
+        if not title_link:
+            continue
+        title = title_link.get_text(" ", strip=True)
+        key = re.sub(r"\W+", " ", title.casefold()).strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        raw: dict = {"official_visibility": "visible", "official_list_url": source_url}
+        if listed_year:
+            raw["official_listing_year"] = int(listed_year.group(1))
+        if accepted:
+            tab = item.find_parent(class_="tab-pane")
+            if tab and re.fullmatch(r"cycle\d+", str(tab.get("id", ""))):
+                raw["acceptance_cycle"] = f"Cycle {str(tab['id'])[5:]}"
+            else:
+                previous = item.find_previous(["h2", "h3"])
+                heading = previous.get_text(" ", strip=True) if previous else ""
+                if re.search(r"\bAccepted\b", heading, flags=re.I):
+                    raw["acceptance_cycle"] = heading
+                    acceptance_year = re.search(r"\b(20\d{2})\b", heading)
+                    if acceptance_year:
+                        raw["acceptance_year"] = int(acceptance_year.group(1))
+        else:
+            raw["official_program_url"] = source_url
+        abstract_node = item.select_one(".abstract, .paper-abstract, [data-field='abstract']")
+        abstract = abstract_node.get_text(" ", strip=True) if abstract_node else ""
+        records.append({
+            "title": title,
+            "authors": _sp_authors(item.select_one(".authorlist")),
+            "source_url": source_url,
+            "record_url": urljoin(source_url, str(title_link["href"])),
+            "abstract": abstract,
+            "pdf_url": _paper_pdf_url(item, source_url),
+            "raw": raw,
+        })
+    return records
+
+
+def parse_sp_accepted_papers(page: str, source_url: str) -> list[dict]:
+    return _sp_records(page, source_url, accepted=True)
+
+
+def parse_sp_program(page: str, source_url: str) -> list[dict]:
+    return _sp_records(page, source_url, accepted=False)
 
 
 def parse_ndss_index(page: str) -> list[dict]:
@@ -183,9 +304,9 @@ def collect_usenix_official(year: int, cache_dir: Path, refresh: bool = False, w
     def fetch(record: dict) -> dict:
         digest = hashlib.sha1(record["source_url"].encode("utf-8")).hexdigest()[:16]
         detail = download_text(record["source_url"], cache_dir / "usenix-papers" / f"{digest}.html", refresh=refresh)
-        pdf_match = re.search(r"<meta[^>]+name=\"citation_pdf_url\"[^>]+content=\"([^\"]+)\"", detail, flags=re.I)
-        if pdf_match:
-            record["pdf_url"] = html.unescape(pdf_match.group(1))
+        for key, value in parse_usenix_paper(detail, record["source_url"]).items():
+            if value:
+                record[key] = value
         return record
 
     enriched = []
@@ -208,6 +329,71 @@ def collect_ccs_official(year: int, cache_dir: Path, refresh: bool = False) -> l
     records = parse_ccs_accepted_papers(page, url)
     if not records:
         raise ValueError(f"CCS {year} accepted-paper tables are unavailable")
+    if year >= 2026:
+        # Main-program assignments can contain a confirmed paper absent from
+        # the accepted-list page. Retain that distinction in its provenance.
+        from pipeline.sources.sessions import parse_ccs_sessions
+
+        program_url = f"https://www.sigsac.org/ccs/CCS{year}/program/schedule.html"
+        try:
+            program_page = download_text(program_url, cache_dir / f"ccs-{year}-program.html", refresh=refresh)
+        except RuntimeError:
+            return records
+        normalize = lambda title: re.sub(r"\W+", " ", title.casefold()).strip()
+        published = {normalize(record["title"]) for record in records}
+        for item in parse_ccs_sessions(program_page, program_url):
+            if normalize(item["title"]) in published or not item["authors"]:
+                continue
+            published.add(normalize(item["title"]))
+            records.append({
+                **item,
+                "abstract": "",
+                "pdf_url": None,
+                "raw": {
+                    **item.get("raw", {}),
+                    "publication_state": "official-program",
+                    "official_visibility": "visible",
+                    "acceptance_cycle": "Official Program",
+                    "accepted_list_missing": True,
+                },
+            })
+    return records
+
+
+def collect_sp_official(
+    year: int,
+    cache_dir: Path,
+    refresh: bool = False,
+    workers: int = 4,
+    details: bool = False,
+) -> list[dict]:
+    """Discover accepted S&P papers, preserving any earlier acceptance-year note.
+
+    The listing year identifies the conference page, not necessarily an item's
+    original acceptance year. The program supplies only fields actually shown;
+    an author list is never treated as an abstract.
+    """
+    base_url = f"https://sp{year}.ieee-security.org/"
+    if year in {2024, 2025}:
+        base_url = f"https://www.ieee-security.org/TC/SP{year}/"
+    url = urljoin(base_url, "accepted-papers.html")
+    page = download_text(url, cache_dir / f"sp-{year}-official.html", refresh=refresh)
+    records = parse_sp_accepted_papers(page, url)
+    if not records:
+        raise ValueError(f"S&P {year} accepted-paper list is unavailable")
+    if details:
+        program_url = urljoin(base_url, "program.html")
+        program_page = download_text(program_url, cache_dir / f"sp-{year}-program.html", refresh=refresh)
+        normalize = lambda title: re.sub(r"\W+", " ", title.casefold()).strip()
+        program = {normalize(item["title"]): item for item in parse_sp_program(program_page, program_url)}
+        for record in records:
+            detail = program.get(normalize(record["title"]))
+            if not detail:
+                continue
+            record["raw"]["official_program_url"] = detail["record_url"]
+            for key in ("abstract", "pdf_url"):
+                if detail.get(key):
+                    record[key] = detail[key]
     return records
 
 

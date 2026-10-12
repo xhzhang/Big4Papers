@@ -110,6 +110,14 @@ CREATE TABLE IF NOT EXISTS paper_relations (
   evidence TEXT,
   PRIMARY KEY (source_paper_id, target_paper_id, relation_type)
 );
+CREATE TABLE IF NOT EXISTS archived_papers (
+  archive_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  paper_id TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  source_url TEXT,
+  snapshot_json TEXT NOT NULL,
+  archived_at TEXT NOT NULL
+);
 """
 
 
@@ -183,6 +191,9 @@ class Store:
         basis = record.get("dblp_key") or f"{record['venue_key']}:{record['year']}:{record['title']}"
         paper_id = record.get("id") or stable_id("paper", basis)
         now = utc_now()
+        current = self.paper_by_id(paper_id)
+        raw_metadata = json.loads(current["raw_metadata"] or "{}") if current else {}
+        raw_metadata.update(record.get("raw") or {})
         with self.transaction():
             self.db.execute(
                 """INSERT INTO papers(
@@ -190,14 +201,17 @@ class Store:
                      abstract, raw_metadata, created_at, updated_at)
                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
-                     dblp_key=excluded.dblp_key, title=excluded.title,
+                     dblp_key=COALESCE(excluded.dblp_key, papers.dblp_key), title=excluded.title,
+                     analysis_status=CASE WHEN papers.title != excluded.title OR
+                       (length(excluded.abstract) > 0 AND COALESCE(papers.abstract, '') != excluded.abstract)
+                       THEN 'pending' ELSE papers.analysis_status END,
                      venue_key=excluded.venue_key, year=excluded.year,
                      session=COALESCE(excluded.session, papers.session),
                      track=COALESCE(excluded.track, papers.track),
                      doi=COALESCE(excluded.doi, papers.doi),
                      source_url=COALESCE(excluded.source_url, papers.source_url),
                      pdf_url=COALESCE(excluded.pdf_url, papers.pdf_url),
-                     abstract=COALESCE(excluded.abstract, papers.abstract),
+                     abstract=COALESCE(NULLIF(excluded.abstract, ''), papers.abstract),
                      raw_metadata=excluded.raw_metadata, updated_at=excluded.updated_at""",
                 (
                     paper_id,
@@ -211,7 +225,7 @@ class Store:
                     record.get("source_url"),
                     record.get("pdf_url"),
                     record.get("abstract"),
-                    json.dumps(record.get("raw", {}), ensure_ascii=False),
+                    json.dumps(raw_metadata, ensure_ascii=False),
                     now,
                     now,
                 ),
@@ -237,6 +251,14 @@ class Store:
             self.add_source(paper_id, provider, "bibliographic_metadata", record.get("record_url"), commit=False)
             if record.get("source_url"):
                 self.add_source(paper_id, provider, "source_url", record["source_url"], commit=False)
+            for field in ("title", "doi", "abstract", "pdf_url"):
+                if not record.get(field):
+                    continue
+                evidence_url = record.get(f"{field}_source_url")
+                if field == "pdf_url":
+                    evidence_url = evidence_url or record.get("pdf_source_url")
+                evidence_url = evidence_url or record.get("record_url") or record.get("source_url")
+                self.add_source(paper_id, provider, field, evidence_url, commit=False)
         return paper_id
 
     def add_source(
@@ -266,11 +288,12 @@ class Store:
     def update_enrichment(self, paper_id: str, work: dict[str, Any]) -> None:
         self.db.execute(
             """UPDATE papers SET
+                 analysis_status=CASE WHEN length(?) > 0 AND COALESCE(abstract, '') != ? THEN 'pending' ELSE analysis_status END,
                  abstract=COALESCE(NULLIF(?, ''), abstract),
                  pdf_url=COALESCE(NULLIF(?, ''), pdf_url),
                  updated_at=?
                WHERE id=?""",
-            (work.get("abstract"), work.get("pdf_url"), utc_now(), paper_id),
+            (work.get("abstract"), work.get("abstract"), work.get("abstract"), work.get("pdf_url"), utc_now(), paper_id),
         )
         for field in ("abstract", "pdf_url"):
             if work.get(field):
@@ -282,6 +305,15 @@ class Store:
             "SELECT id, title FROM papers WHERE venue_key=? AND year=?",
             (venue_key, year),
         ))
+
+    def paper_records_for_venue_year(self, venue_key: str, year: int) -> list[dict[str, Any]]:
+        records = [dict(row) for row in self.papers_for_venue_year(venue_key, year)]
+        for record in records:
+            record["authors"] = [row["name"] for row in self.db.execute(
+                """SELECT a.name FROM paper_authors pa JOIN authors a ON a.id=pa.author_id
+                   WHERE pa.paper_id=? ORDER BY pa.author_order""", (record["id"],)
+            )]
+        return records
 
     def official_discoveries_for_venue_year(self, venue_key: str, year: int) -> list[sqlite3.Row]:
         return list(
@@ -300,18 +332,48 @@ class Store:
             self.db.executemany("DELETE FROM papers WHERE id=?", ((paper_id,) for paper_id in paper_ids))
         return len(paper_ids)
 
+    def archive_papers(self, paper_ids: list[str], *, reason: str, source_url: str | None = None) -> int:
+        """Keep facts, authors, summaries and provenance before excluding a record."""
+        archived = 0
+        with self.transaction():
+            for paper_id in dict.fromkeys(paper_ids):
+                paper = self.paper_by_id(paper_id)
+                if not paper:
+                    continue
+                snapshot: dict[str, Any] = {"paper": dict(paper)}
+                for table in ("paper_authors", "paper_topics", "paper_tags", "sources", "analysis_runs"):
+                    snapshot[table] = [dict(row) for row in self.db.execute(f"SELECT * FROM {table} WHERE paper_id=?", (paper_id,))]
+                snapshot["authors"] = [dict(row) for row in self.db.execute(
+                    "SELECT a.* FROM authors a JOIN paper_authors pa ON a.id=pa.author_id WHERE pa.paper_id=?", (paper_id,)
+                )]
+                snapshot["paper_relations"] = [dict(row) for row in self.db.execute(
+                    "SELECT * FROM paper_relations WHERE source_paper_id=? OR target_paper_id=?", (paper_id, paper_id)
+                )]
+                self.db.execute(
+                    "INSERT INTO archived_papers(paper_id, reason, source_url, snapshot_json, archived_at) VALUES(?, ?, ?, ?, ?)",
+                    (paper_id, reason, source_url, json.dumps(snapshot, ensure_ascii=False), utc_now()),
+                )
+                self.db.execute("DELETE FROM papers WHERE id=?", (paper_id,))
+                archived += 1
+        return archived
+
     def update_official(self, paper_id: str, provider: str, record: dict[str, Any]) -> None:
         abstract = record.get("abstract") or None
         pdf_url = record.get("pdf_url") or None
         source_url = record.get("source_url") or None
-        current = self.db.execute("SELECT raw_metadata FROM papers WHERE id=?", (paper_id,)).fetchone()
+        current = self.paper_by_id(paper_id)
         try:
             raw_metadata = json.loads(current["raw_metadata"] or "{}") if current else {}
         except json.JSONDecodeError:
             raw_metadata = {}
         raw_metadata.update(record.get("raw") or {})
+        title = record.get("title") or (current["title"] if current else "")
+        analysis_changed = bool(current and (title != current["title"] or (abstract and abstract != current["abstract"])))
         self.db.execute(
             """UPDATE papers SET
+                 title=?,
+                 doi=COALESCE(?, doi),
+                 analysis_status=CASE WHEN ? THEN 'pending' ELSE analysis_status END,
                  abstract=COALESCE(?, abstract),
                  pdf_url=COALESCE(?, pdf_url),
                  source_url=COALESCE(?, source_url),
@@ -321,6 +383,9 @@ class Store:
                  updated_at=?
                WHERE id=?""",
             (
+                title,
+                record.get("doi") or None,
+                analysis_changed,
                 abstract,
                 pdf_url,
                 source_url,
@@ -331,9 +396,25 @@ class Store:
                 paper_id,
             ),
         )
-        for field, value in (("abstract", abstract), ("pdf_url", pdf_url), ("source_url", source_url)):
+        if record.get("authors"):
+            self.db.execute("DELETE FROM paper_authors WHERE paper_id=?", (paper_id,))
+            for index, name in enumerate(dict.fromkeys(record["authors"])):
+                name = name.strip()
+                if not name:
+                    continue
+                author_id = stable_id("author", name)
+                self.db.execute(
+                    "INSERT INTO authors(id, name, normalized_name) VALUES(?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name",
+                    (author_id, name, " ".join(name.lower().replace("-", " ").split())),
+                )
+                self.db.execute("INSERT INTO paper_authors(paper_id, author_id, author_order) VALUES(?, ?, ?)", (paper_id, author_id, index))
+        for field, value in (("title", record.get("title")), ("doi", record.get("doi")), ("abstract", abstract), ("pdf_url", pdf_url), ("source_url", source_url)):
             if value:
-                self.add_source(paper_id, provider, field, source_url, commit=False)
+                evidence_url = record.get(f"{field}_source_url")
+                if field == "pdf_url":
+                    evidence_url = evidence_url or record.get("pdf_source_url")
+                evidence_url = evidence_url or record.get("record_url") or source_url
+                self.add_source(paper_id, provider, field, evidence_url, commit=False)
         self.db.commit()
 
     def clear_sessions(self, venue_key: str, year: int) -> None:

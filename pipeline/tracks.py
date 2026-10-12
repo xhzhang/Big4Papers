@@ -5,7 +5,7 @@ import html
 import re
 
 
-TRACK_RULESET_VERSION = "2026.07-v1"
+TRACK_RULESET_VERSION = "2026.10-v1"
 
 CONTROLLED_TRACKS = (
     "AI and Machine Learning Security",
@@ -90,6 +90,104 @@ def _rule(pattern: str, label: str) -> tuple[re.Pattern[str], str]:
     return re.compile(pattern, re.I), label
 
 
+# Specific official Session topics precede loose keyword matches: ML can be the
+# technique used for finding software bugs, and privacy can be the research
+# objective of an ML Session. These IDs identify the decision, not a venue/year,
+# so a repeated Session topic remains traceable across conferences.
+_TOPIC_RULES = (
+    (
+        "ml-for-vulnerability-analysis",
+        re.compile(r"\b(?:ml|machine learning|ai) for vulnerability (?:discovery|analysis)\b", re.I),
+        "Program Analysis",
+        0.96,
+    ),
+    (
+        "network-intrusion-detection",
+        re.compile(r"\bnetwork[- ]based intrusion detection\b", re.I),
+        "Network Security",
+        0.96,
+    ),
+    (
+        "ml-privacy",
+        re.compile(r"\bprivacy (?:in|of|for) (?:ml|machine learning)\b", re.I),
+        "Machine Learning Privacy",
+        0.96,
+    ),
+    (
+        "secure-computation-for-ml",
+        re.compile(r"^secure computation for (?:ml|machine learning)(?: or federated learning)?$", re.I),
+        "Privacy-Preserving Systems",
+        0.90,
+    ),
+    (
+        "agentic-ai-security",
+        re.compile(r"^ml attacks and defenses in agentic ai$", re.I),
+        "LLM Security",
+        0.92,
+    ),
+    (
+        "natural-language-model-security",
+        re.compile(r"^ml attacks and defenses in natural language processing$", re.I),
+        "LLM Security",
+        0.94,
+    ),
+    (
+        "formal-analysis-verification",
+        re.compile(r"\bformal analysis(?: and verification)?\b", re.I),
+        "Formal Methods and Verification",
+        0.96,
+    ),
+    (
+        "human-computer-interfaces",
+        re.compile(r"\bhuman[- ]computer (?:interfaces?|interaction)\b", re.I),
+        "Usable Security and Privacy",
+        0.94,
+    ),
+    (
+        "user-perceptions",
+        re.compile(r"\buser perceptions?\b", re.I),
+        "Usable Security and Privacy",
+        0.92,
+    ),
+    (
+        "software-hardening-testing",
+        re.compile(r"\bsoftware (?:hardening|testing)\b", re.I),
+        "Software Security",
+        0.94,
+    ),
+    (
+        "vulnerability-analysis",
+        re.compile(r"^vulnerability analysis$", re.I),
+        "Software Security",
+        0.92,
+    ),
+    (
+        "malware-and-firmware-analysis",
+        re.compile(r"^malware analysis and firmware security$", re.I),
+        "Malware and Reverse Engineering",
+        0.86,
+    ),
+    (
+        "protocol-security",
+        re.compile(r"^protocol security$", re.I),
+        "Cryptographic Protocols",
+        0.86,
+    ),
+    (
+        "wireless-and-mobile-security",
+        re.compile(r"^wireless and mobile security$", re.I),
+        "Wireless and Cellular Security",
+        0.84,
+    ),
+    (
+        "ai-hardware-security",
+        re.compile(r"\b(?:ai|ml|machine learning) (?:hardware|accelerator) security\b", re.I),
+        "Hardware Security",
+        0.96,
+    ),
+)
+
+
 _CONTROLLED_RULES = (
     _rule(r"\b(posters?|demos?|demonstrations?|workshops?|doctoral symposium|tutorials?|keynote talks?|young scholars development program)\b", "Posters, Demos, and Workshops"),
     _rule(r"\b(llms?|large language|language models?|foundation models?|prompt(?: injection| engineering)?|jailbreak|smart\W*assistants?)\b", "LLM Security"),
@@ -129,7 +227,7 @@ _CONTROLLED_RULES = (
     ),
     _rule(r"\b(usable|usability|human[- ]centered|privacy and usability|being secure online)\b", "Usable Security and Privacy"),
     _rule(
-        r"\b(human factors?|human aspects?|humans|measurement|understanding communities|"
+        r"\b(human factors?|human aspects?|humans|measurements?|understanding communities|"
         r"user stud(?:y|ies)|empirical|developers?|experts?|security advice|social issues|security in the real world|security in the wild|security meets (?:people|policy)|worker perspectives|security professionals|perspectives and incentives|academic|facing the facts|measuring security deployments)\b",
         "Human Factors and Security Measurement",
     ),
@@ -186,7 +284,31 @@ def explain_track(session: str | None) -> dict[str, object]:
         }
 
     value = _normalize_session(raw_session)
-    for pattern, canonical in _CONTROLLED_RULES:
+    # Meeting formats are not research directions, even if their titles contain
+    # one of the more specific research topic phrases below.
+    program_pattern, program_track = _CONTROLLED_RULES[0]
+    program_match = program_pattern.search(value)
+    if program_match:
+        return {
+            "track": program_track,
+            "normalizedSession": value,
+            "method": "program-rule",
+            "ruleId": "session-keyword:posters-demos-and-workshops",
+            "matchedText": program_match.group(0),
+            "confidence": 0.92,
+        }
+    for rule_id, pattern, canonical, confidence in _TOPIC_RULES:
+        match = pattern.search(value)
+        if match:
+            return {
+                "track": canonical,
+                "normalizedSession": value,
+                "method": "keyword-rule",
+                "ruleId": f"session-topic:{rule_id}",
+                "matchedText": match.group(0),
+                "confidence": confidence,
+            }
+    for pattern, canonical in _CONTROLLED_RULES[1:]:
         match = pattern.search(value)
         if match:
             method = "program-rule" if track_type(canonical) == "program" else "keyword-rule"
