@@ -1,7 +1,6 @@
 ﻿"""OpenAlex enrichment for abstracts, open PDFs, and canonical work links."""
 from __future__ import annotations
 
-import difflib
 import json
 import re
 import time
@@ -32,6 +31,17 @@ def normalize_title(value: str) -> str:
     return " ".join(re.sub(r"[^a-z0-9 ]+", " ", value.lower()).split())
 
 
+def is_research_abstract(value: str) -> bool:
+    """Reject repository descriptions and indexing placeholders, not research prose."""
+    text = value.strip()
+    if len(text.split()) < 20:
+        return False
+    return not re.match(
+        r"(?:International audience\b|This (?:is (?:an? |the (?:official )?)?)?(?:repository|artifact|dataset|code repository)\b|Artifact for (?:the )?paper\b|This item contains\b|Open-source implementations\b|This paper(?: and abstract)? (?:is|are) under embargo\b)",
+        text, re.I,
+    )
+
+
 class OpenAlexEnricher:
     def __init__(self, mailto: str | None = None):
         self.mailto = mailto
@@ -60,8 +70,9 @@ class OpenAlexEnricher:
     def _work_payload(work: dict) -> dict:
         best = work.get("best_oa_location") or {}
         primary = work.get("primary_location") or {}
+        abstract = reconstruct_abstract(work.get("abstract_inverted_index"))
         return {
-            "abstract": reconstruct_abstract(work.get("abstract_inverted_index")),
+            "abstract": abstract if is_research_abstract(abstract) else "",
             "pdf_url": best.get("pdf_url") or primary.get("pdf_url"),
             "record_url": work.get("id"),
         }
@@ -104,15 +115,11 @@ class OpenAlexEnricher:
         candidates = []
         for work in payload.get("results", []):
             actual = normalize_title(work.get("title") or "")
-            similarity = difflib.SequenceMatcher(None, expected, actual).ratio()
-            if int(work.get("publication_year") or 0) == int(record.get("year") or 0):
-                similarity += 0.05
-            candidates.append((similarity, work))
+            if actual == expected and expected and work.get("type") not in {"dataset", "software", "supplementary-material"}:
+                candidates.append(work)
         if not candidates:
             return None
-        score, work = max(candidates, key=lambda item: item[0])
-        if score < 0.91:
-            return None
+        work = max(candidates, key=lambda item: bool(self._work_payload(item).get("abstract")))
         enriched = self._work_payload(work)
         if not enriched.get("abstract") and not enriched.get("pdf_url"):
             return None

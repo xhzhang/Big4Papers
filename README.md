@@ -68,6 +68,7 @@ python -m pipeline.server --port 8000
 - `sources`：每个字段的提供者、来源 URL 和采集时间；
 - `analysis_runs`：分析器、模型、提示词版本和原始结构化结果；
 - `paper_relations`：为前作、后续、对比和扩展关系预留。
+- `archived_papers`：保存核查后移出的错年条目、非论文报告及其作者、来源和分析记录，便于恢复；归档内容不进入网页与统计。
 
 页面会明确区分事实字段、机器候选分类和缺失字段。论文详情中的“数据与 Track 溯源”会同时展示官网原始 Session、清洗后的规则输入、实际命中词、规则 ID、规则集版本和规则确定性；其中确定性描述规则具体程度，不是模型概率。规则分类只负责 Topic 与标签，不再生成或展示伪装成论文概述的模板文本；中文概述只有通过标题/摘要证据校验后才会进入网页与表格导出。
 
@@ -129,6 +130,19 @@ pnpm test
 3. DOI、出版方和会议页面作为权威论文落点；OpenAlex 用于补充摘要和开放访问 PDF；
 4. PDF 只保存链接，不批量保存受版权保护的正文；
 5. 团队页面仅显示共同作者算法线索，不把推断结果冒充机构或实验室事实。
+
+更新时，官网改题的论文会先按完整标题、再按作者交集与标题相似度保守核对，尽量保持论文 ID 与已有课程清单关联稳定。录用页的 HTML 注释不作为已发布列表；邀请报告和历史论文纪念讨论不计入当年的研究论文。官网列表异常缩短时会暂停自动归档，避免因页面暂缺而误删。
+
+摘要补充使用 DOI 或规范化完整标题匹配，不再凭近似标题自动关联。仓库说明、复现工件介绍、`International audience` 等占位文字不能作为英文摘要。人工复核后的元数据包可先预演再导入：
+
+```powershell
+python scripts/import-reviewed-metadata.py --input outputs/reviewed-metadata.json --venue sp --year 2026
+python scripts/import-reviewed-metadata.py --input outputs/reviewed-metadata.json --venue sp --year 2026 --apply
+```
+
+该流程只补充 DOI、原文摘要和开放 PDF，逐字段记录来源，不覆盖官网标题、作者或落地页。输入摘要变化后，原概述会被识别为过期，需重新生成。
+
+最近一次核查及数据范围见 [数据更新记录](DATA_UPDATES.md)。
 
 
 

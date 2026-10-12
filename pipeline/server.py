@@ -119,6 +119,7 @@ class UpdateCoordinator:
                     "usenix",
                     "ndss",
                     "ccs",
+                    "sp",
                     "--discover",
                     "--prune-discovered",
                     "--details",

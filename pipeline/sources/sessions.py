@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup, NavigableString, Tag
 
 from pipeline.config import VENUES
 from pipeline.sources.dblp import collect_venue_year
-from pipeline.sources.official import download_text
+from pipeline.sources.official import download_text, is_usenix_research_article
 from pipeline.sources.openalex import normalize_title
 from pipeline.tracks import canonicalize_track
 
@@ -43,6 +43,8 @@ def parse_usenix_sessions(page: str, program_url: str) -> list[dict]:
             continue
         session = _clean(heading.get_text(" ", strip=True))
         for paper_article in session_article.select("article.node-paper"):
+            if not is_usenix_research_article(paper_article):
+                continue
             title_link = paper_article.select_one("h2 a[href]")
             if not title_link:
                 continue
@@ -54,6 +56,72 @@ def parse_usenix_sessions(page: str, program_url: str) -> list[dict]:
                     "program_url": program_url,
                 }
             )
+    return _deduplicate(records)
+
+
+def _ccs_program_authors(value: str) -> list[str]:
+    """Split author/affiliation pairs, respecting commas inside affiliations."""
+    groups: list[str] = []
+    start = depth = 0
+    for index, char in enumerate(value):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth = max(0, depth - 1)
+        elif char in {",", ";"} and depth == 0:
+            groups.append(value[start:index])
+            start = index + 1
+    groups.append(value[start:])
+    names = [_clean(group.split(" (", 1)[0]).strip(" ,;") for group in groups]
+    return [name for name in names if name]
+
+
+def parse_ccs_sessions(page: str, program_url: str) -> list[dict]:
+    """Read the main-conference schedule's actual paper/session assignments."""
+    soup = BeautifulSoup(page, "html.parser")
+    records: list[dict] = []
+    for article in soup.select("article.schedule-session"):
+        heading = article.find("h5")
+        if not heading:
+            continue
+        topic = _clean(heading.get_text(" ", strip=True))
+        session_id = str(article.get("id", ""))
+        id_node = article.select_one(".schedule-session-id")
+        original_id = _clean(id_node.get_text(" ", strip=True)) if id_node else session_id
+        session = f"{original_id}: {topic}" if original_id else topic
+        track_node = article.select_one(".schedule-track")
+        official_track = str(track_node.get("title") or track_node.get("aria-label") or track_node.get_text(" ", strip=True)) if track_node else ""
+        for paper in article.select("li.schedule-paper"):
+            title_node = paper.select_one(".schedule-paper-title")
+            if not title_node:
+                continue
+            # Submission IDs are markup, not part of the paper title.
+            title = " ".join(
+                str(child) if isinstance(child, NavigableString) else child.get_text(" ", strip=True)
+                for child in title_node.children
+                if not (isinstance(child, Tag) and "schedule-paper-id" in child.get("class", []))
+            )
+            title = _clean(title)
+            if not title:
+                continue
+            authors_node = paper.select_one(".schedule-authors")
+            author_text = _clean(authors_node.get_text(" ", strip=True)) if authors_node else ""
+            records.append({
+                "title": title,
+                "authors": _ccs_program_authors(author_text),
+                "session": session,
+                "source_url": program_url,
+                "record_url": f"{program_url}#{session_id}" if session_id else program_url,
+                "program_url": program_url,
+                "raw": {
+                    "official_session_id": session_id,
+                    "official_session_topic": topic,
+                    "official_session": session,
+                    "official_track": _clean(official_track),
+                    "official_submission_id": str(paper.get("data-paper-id", "")),
+                    "official_authors_with_affiliations": author_text,
+                },
+            })
     return _deduplicate(records)
 
 
@@ -178,6 +246,19 @@ def collect_venue_sessions(
     refresh: bool = False,
 ) -> list[dict]:
     if venue_key == "ccs":
+        # The 2026 main program is already available before DBLP proceedings.
+        # Earlier CCS editions keep their established DBLP session collector.
+        if year >= 2026:
+            program_url = f"https://www.sigsac.org/ccs/CCS{year}/program/schedule.html"
+            try:
+                page = download_text(program_url, cache_dir / f"ccs-{year}-program.html", refresh=refresh)
+                records = parse_ccs_sessions(page, program_url)
+                if records:
+                    return records
+            except RuntimeError:
+                # If a future year's official schedule is not yet published,
+                # proceedings remain a factual fallback rather than inference.
+                pass
         return [
             {
                 "title": record["title"],

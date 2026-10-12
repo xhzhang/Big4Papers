@@ -8,7 +8,7 @@ $yearArgs = $Years | ForEach-Object { $_.ToString() }
 $syncArgs = @("-m", "pipeline", "sync", "--years") + $yearArgs
 if ($Refresh) { $syncArgs += "--refresh" }
 python @syncArgs
-$officialArgs = @("-m", "pipeline", "enrich-official", "--years") + $yearArgs + @("--venues", "usenix", "ndss", "ccs", "--discover", "--prune-discovered", "--details")
+$officialArgs = @("-m", "pipeline", "enrich-official", "--years") + $yearArgs + @("--venues", "usenix", "ndss", "ccs", "sp", "--discover", "--prune-discovered", "--details")
 if ($Refresh) { $officialArgs += "--refresh" }
 python @officialArgs
 python -m pipeline enrich
